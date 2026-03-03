@@ -1,0 +1,107 @@
+# inputs.yaml
+# Updated configuration to stitch on rudderstack user_id to contact_retail.customerid
+
+inputs:
+  # RudderStack events - primary stitching sources
+  - name: rsIdentifies
+    app_defaults:
+      table: rudderstack.identifies
+      occurred_at_col: timestamp
+      ids:
+        - select: "user_id"
+          type: user_id
+          entity: user
+        - select: "anonymous_id"
+          type: anonymous_id
+          entity: user
+        - select: "lower(context_traits_email)"
+          type: email
+          entity: user
+
+  - name: rsTracks
+    app_defaults:
+      table: rudderstack.tracks
+      occurred_at_col: timestamp
+      ids:
+        - select: "user_id"
+          type: user_id
+          entity: user
+        - select: "anonymous_id"
+          type: anonymous_id
+          entity: user
+
+  # Contact table - primary stitching source for email
+  - name: contact
+    app_defaults:
+      table: sysdba.contact
+      ids:
+        - select: "lower(email)"
+          type: email
+          entity: user
+        - select: "contactid"
+          type: contact_id
+          entity: user
+
+  # Name phone matches - primary stitching source for name_phone_key
+  - name: name_phone_matches
+    app_defaults:
+      view: rudderstackprofiles.name_phone_matches
+      ids:
+        - select: "name_phone_key"
+          type: name_phone_key
+          entity: user
+        - select: "contactid"
+          type: contact_id
+          entity: user
+        - select: "email"
+          type: email
+          entity: user
+        - select: "customerid"
+          type: user_id
+          entity: user
+
+  # Contact retail 
+  - name: contact_retail
+    app_defaults:
+      table: sysdba.contact_retail
+      ids:
+        - select: "customerid"
+          type: user_id
+          entity: user
+        - select: "contactid"
+          type: contact_id
+          entity: user
+
+  # Feature tables - linked via contact_id bridge
+  - name: contact_profile
+    app_defaults:
+      table: sysdba.contact_profile
+      ids:
+        - select: "contactid"
+          type: contact_id
+          entity: user
+
+ # Product browsing data - for interest-based affinity
+  - name: rsProductViewed
+    app_defaults:
+      table: rudderstack.product_viewed
+      occurred_at_col: timestamp
+      ids:
+        - select: "user_id"
+          type: user_id
+          entity: user
+        - select: "anonymous_id"
+          type: anonymous_id
+          entity: user
+
+  - name: rsProductAddedToWishlist
+    app_defaults:
+      table: rudderstack.product_added_to_wishlist
+      occurred_at_col: timestamp
+      ids:
+        - select: "user_id"
+          type: user_id
+          entity: user
+        - select: "anonymous_id"
+          type: anonymous_id
+          entity: user

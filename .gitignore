@@ -1,0 +1,22 @@
+.DS_Store
+output
+logs
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+# pb specific
+*.yaml.bak
+# Credentials
+siteconfig.yaml
+*.key
+*.token
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/

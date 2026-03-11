@@ -1,0 +1,1350 @@
+models:
+  - name: contact_with_retail
+    model_type: sql_template
+    model_spec:
+      materialization:
+        output_type: table
+      single_sql: |
+        , user_customer_mapping AS (
+          -- Get all customer IDs associated with each stitched user
+          SELECT 
+            user_main_id,
+            other_id AS customerid
+          FROM {{ this.DeRef("models/user_id_stitcher") }}
+          WHERE other_id_type = 'user_id'
+        ),
+        user_contact_details AS (
+          SELECT 
+            ucm.user_main_id,
+            c.contactid,
+            c.seccodeid,
+            c.createdate,
+            cr.customerid
+          FROM user_customer_mapping ucm
+          JOIN sysdba.contact_retail cr ON ucm.customerid = cr.customerid
+          JOIN sysdba.contact c ON cr.contactid = c.contactid
+          
+          WHERE c.seccodeid IN ('F6UJ9A000002', 'F6UJ9A000004','F6UJ9A000017')
+        ),
+        customer_prioritized AS (
+          SELECT 
+            user_main_id,
+            contactid,
+            seccodeid,
+            createdate,
+            customerid,
+            
+            -- Window function for mainline_customerid (seccode ending in 02)
+            CASE 
+              WHEN seccodeid = 'F6UJ9A000002' THEN
+                first_value(customerid) OVER (
+                  PARTITION BY user_main_id, seccodeid
+                  
+                  ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
+                )
+            END as mainline_customerid,
+            -- Window function for outlet_customerid (seccode ending in 04)
+            CASE 
+              WHEN seccodeid = 'F6UJ9A000004' THEN
+                first_value(customerid) OVER (
+                  PARTITION BY user_main_id, seccodeid
+                  
+                  ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
+                )
+            END as outlet_customerid
+          FROM user_contact_details
+        )
+        SELECT 
+          user_main_id,
+          contactid,
+          seccodeid,
+          createdate,
+          customerid,
+          CAST(mainline_customerid AS STRING) as mainline_customerid,
+          CAST(outlet_customerid AS STRING) as outlet_customerid,
+          -- Primary customer ID: COALESCE mainline first, then outlet
+          CAST(COALESCE(
+            MAX(mainline_customerid) OVER (PARTITION BY user_main_id),
+            MAX(outlet_customerid) OVER (PARTITION BY user_main_id)
+          ) AS STRING) AS primary_customerid
+        FROM customer_prioritized
+      ids:
+        - select: "user_main_id"
+          type: main_id
+          entity: user
+
+  # NEW: Contact data filtered by primary_customerid
+  - name: contact_primary_filtered
+    model_type: sql_template
+    model_spec:
+      materialization:
+        output_type: table
+      single_sql: |
+        , user_primary_contact AS (
+          SELECT 
+            cwr.user_main_id,
+            cwr.primary_customerid,
+            cr.contactid as primary_contactid
+          FROM {{ this.DeRef("models/contact_with_retail") }} cwr
+          JOIN sysdba.contact_retail cr 
+            ON cwr.primary_customerid = cr.customerid
+        )
+        SELECT 
+          upc.user_main_id,
+          c.contactid,
+          c.firstname,
+          c.lastname,
+          trim(lower(c.email)) as primary_email,
+          c.mobile,
+          c.homephone,
+          c.prefix,
+          trim(lower(c.email)) as email,
+          CAST(c.createdate AS DATE) AS createdate
+        FROM user_primary_contact upc
+        JOIN sysdba.contact c ON upc.primary_contactid = c.contactid
+      ids:
+        - select: "user_main_id"
+          type: main_id
+          entity: user
+
+  # NEW: Contact retail data filtered by primary_customerid  
+  - name: contact_retail_primary_filtered
+    model_type: sql_template
+    model_spec:
+      materialization:
+        output_type: table
+      single_sql: |
+        , user_primary_contact AS (
+          SELECT 
+            cwr.user_main_id,
+            cwr.primary_customerid,
+            cr.contactid as primary_contactid
+          FROM {{ this.DeRef("models/contact_with_retail") }} cwr
+          JOIN sysdba.contact_retail cr 
+            ON cwr.primary_customerid = cr.customerid
+        )
+        SELECT 
+          upc.user_main_id,
+          cr.contactid,
+          cr.customerid,
+          cr.identityid,
+          CASE
+            WHEN UPPER(cr.languagepref) LIKE 'EN%' OR UPPER(cr.languagepref) IN ('US', 'UK', 'ENG')
+              THEN 'en'
+            WHEN UPPER(cr.languagepref) LIKE 'FR%'
+              THEN 'fr'
+            ELSE 'en'
+          END as languagepref,
+          cr.last_transaction_date
+        FROM user_primary_contact upc
+        JOIN sysdba.contact_retail cr ON upc.primary_contactid = cr.contactid
+      ids:
+        - select: "user_main_id"
+          type: main_id
+          entity: user
+
+  # NEW: Address data filtered by primary_customerid
+  - name: address_primary_filtered
+    model_type: sql_template
+    model_spec:
+      materialization:
+        output_type: table
+      single_sql: |
+        , user_primary_contact AS (
+          SELECT 
+            cwr.user_main_id,
+            cwr.primary_customerid,
+            cr.contactid as primary_contactid
+          FROM {{ this.DeRef("models/contact_with_retail") }} cwr
+          JOIN sysdba.contact_retail cr 
+            ON cwr.primary_customerid = cr.customerid
+        )
+        SELECT 
+          upc.user_main_id,
+          a.address1 as address,
+          a.city,
+          a.state as province,
+          a.postalcode,
+          a.country
+        FROM user_primary_contact upc
+        JOIN sysdba.address a ON upc.primary_contactid = a.entityid
+        WHERE a.isprimary = 'T'
+      ids:
+        - select: "user_main_id"
+          type: main_id
+          entity: user
+
+  - name: customer_brand_affinity
+    model_type: sql_template
+    model_spec:
+      materialization:
+        output_type: table
+      single_sql: |
+        , user_customer_mapping AS (
+          -- Get all customer IDs associated with each stitched user
+          SELECT 
+            user_main_id,
+            other_id AS customerid
+          FROM {{ this.DeRef("models/user_id_stitcher") }}
+          WHERE other_id_type = 'user_id'
+        ),
+        brand_counts AS (
+          SELECT 
+            ucm.user_main_id,
+            UPPER(c.brand_name_eng) as brand_name_eng,
+            SUM(NVL(ti.qty, 0)) AS purchased_items
+          FROM user_customer_mapping ucm
+          JOIN vstore.customer cust ON ucm.customerid = cust.identificationno
+          JOIN vstore.transaction t ON cust.pkcustomerno = t.fkcustomerno
+          LEFT JOIN vstore.tranitem ti ON ti.fktransactionid = t.pktransactionid
+          INNER JOIN vstore.sku s ON s.pksku = ti.fksku
+          INNER JOIN elcat.catalog c ON s.fkstyleno = SUBSTR(c.styleid, 1, 8)
+          WHERE NVL(ti.qty, 0) > 0 
+            AND t.fkTranType IN (10)
+            AND COALESCE(t.IsVoided, 'f') = 'f'
+            AND t.businessdate > date_sub(current_date(), 365 * 3)
+            AND c.brand_name_eng IS NOT NULL
+          GROUP BY ucm.user_main_id, UPPER(c.brand_name_eng)
+        ),
+        ranked_brands AS (
+          SELECT
+            user_main_id,
+            brand_name_eng,
+            purchased_items,
+            ROW_NUMBER() OVER (PARTITION BY user_main_id ORDER BY purchased_items DESC) AS rn
+          FROM brand_counts
+        )
+        SELECT 
+          user_main_id,
+          concat_ws('|', collect_list(brand_name_eng)) AS brand_affinity_purchased
+        FROM (
+          SELECT 
+            user_main_id,
+            brand_name_eng
+          FROM ranked_brands
+          WHERE rn <= 10
+          ORDER BY user_main_id, purchased_items DESC
+        ) 
+        GROUP BY user_main_id
+      ids:
+        - select: "user_main_id"
+          type: main_id
+          entity: user
+
+  - name: customer_category_affinity
+    model_type: sql_template
+    model_spec:
+      materialization:
+        output_type: table
+      single_sql: |
+        , user_customer_mapping AS (
+          -- Get all customer IDs associated with each stitched user
+          SELECT 
+            user_main_id,
+            other_id AS customerid
+          FROM {{ this.DeRef("models/user_id_stitcher") }}
+          WHERE other_id_type = 'user_id'
+        ),
+        category_counts AS (
+          SELECT
+            ucm.user_main_id,
+            c.catagory_level_2a,
+            SUM(NVL(ti.qty, 0)) AS purchased_items
+          FROM user_customer_mapping ucm
+          JOIN vstore.customer cust ON ucm.customerid = cust.identificationno
+          JOIN vstore.transaction t ON cust.pkcustomerno = t.fkcustomerno
+          LEFT JOIN vstore.tranitem ti ON ti.fktransactionid = t.pktransactionid
+          INNER JOIN vstore.sku s ON s.pksku = ti.fksku
+          INNER JOIN elcat.catalog c ON s.fkstyleno = SUBSTR(c.styleid, 1, 8)
+          WHERE NVL(ti.qty, 0) > 0
+            AND t.fkTranType IN (10)
+            AND COALESCE(t.IsVoided, 'f') = 'f'
+            AND t.businessdate > date_sub(current_date(), 365 * 3)
+            AND c.catagory_level_2a IS NOT NULL
+          GROUP BY ucm.user_main_id, c.catagory_level_2a
+        ),
+        ranked_categories AS (
+          SELECT
+            user_main_id,
+            UPPER(catagory_level_2a) as catagory_level_2a,
+            purchased_items,
+            ROW_NUMBER() OVER (PARTITION BY user_main_id ORDER BY purchased_items DESC) AS rn
+          FROM category_counts
+        )
+        SELECT
+          user_main_id,
+          concat_ws('|', collect_list(catagory_level_2a)) AS category_affinity_purchased
+        FROM (
+          SELECT
+            user_main_id,
+            catagory_level_2a
+          FROM ranked_categories
+          WHERE rn <= 10
+          ORDER BY user_main_id, purchased_items DESC
+        )
+        GROUP BY user_main_id
+      ids:
+        - select: "user_main_id"
+          type: main_id
+          entity: user
+
+  - name: customer_brand_affinity_interested
+    model_type: sql_template
+    model_spec:
+      materialization:
+        output_type: table
+      single_sql: |
+        , user_customer_mapping AS (
+          -- Get all customer IDs associated with each stitched user
+          SELECT 
+            user_main_id,
+            other_id AS customerid
+          FROM {{ this.DeRef("models/user_id_stitcher") }}
+          WHERE other_id_type = 'user_id'
+        ),
+        browsing_events AS (
+          -- Combine product viewed and wishlist events
+          SELECT 
+            ucm.user_main_id,
+            pv.brand_en as brand_name,
+            'viewed' as event_type,
+            pv.timestamp
+          FROM rudderstack.product_viewed pv
+          JOIN user_customer_mapping ucm ON pv.user_id = ucm.customerid
+          WHERE pv.user_id IS NOT NULL 
+            AND pv.brand_en IS NOT NULL 
+            AND pv.brand_en != ''
+            AND pv.timestamp > date_sub(current_date(), 180)
+          
+          UNION ALL
+          
+          SELECT 
+            ucm.user_main_id,
+            pw.brand_en as brand_name,
+            'added_to_wishlist' as event_type,
+            pw.timestamp
+          FROM rudderstack.product_added_to_wishlist pw
+          JOIN user_customer_mapping ucm ON pw.user_id = ucm.customerid
+          WHERE pw.user_id IS NOT NULL 
+            AND pw.brand_en IS NOT NULL 
+            AND pw.brand_en != ''
+            AND pw.timestamp > date_sub(current_date(), 180)
+        ),
+        brand_counts AS (
+          SELECT 
+            user_main_id,
+            UPPER(brand_name) as brand_name,
+            COUNT(*) AS interaction_count
+          FROM browsing_events
+          GROUP BY user_main_id, brand_name
+        ),
+        ranked_brands AS (
+          SELECT
+            user_main_id,
+            brand_name,
+            interaction_count,
+            ROW_NUMBER() OVER (PARTITION BY user_main_id ORDER BY interaction_count DESC) AS rn
+          FROM brand_counts
+        )
+        SELECT 
+          user_main_id,
+          concat_ws('|', collect_list(brand_name)) AS brand_affinity_interested
+        FROM (
+          SELECT 
+            user_main_id,
+            brand_name
+          FROM ranked_brands
+          WHERE rn <= 10
+          ORDER BY user_main_id, interaction_count DESC
+        ) 
+        GROUP BY user_main_id
+      ids:
+        - select: "user_main_id"
+          type: main_id
+          entity: user
+
+  - name: customer_category_affinity_interested
+    model_type: sql_template
+    model_spec:
+      materialization:
+        output_type: table
+      single_sql: |
+        , user_customer_mapping AS (
+          -- Get all customer IDs associated with each stitched user
+          SELECT 
+            user_main_id,
+            other_id AS customerid
+          FROM {{ this.DeRef("models/user_id_stitcher") }}
+          WHERE other_id_type = 'user_id'
+        ),
+        browsing_events AS (
+          -- Combine product viewed and wishlist events
+          SELECT 
+            ucm.user_main_id,
+            pv.category2 as category_name,
+            'viewed' as event_type,
+            pv.timestamp
+          FROM rudderstack.product_viewed pv
+          JOIN user_customer_mapping ucm ON pv.user_id = ucm.customerid
+          WHERE pv.user_id IS NOT NULL 
+            AND pv.category2 IS NOT NULL 
+            AND pv.category2 != ''
+            AND pv.timestamp > date_sub(current_date(), 180)
+          
+          UNION ALL
+          
+          SELECT 
+            ucm.user_main_id,
+            pw.category2 as category_name,
+            'added_to_wishlist' as event_type,
+            pw.timestamp
+          FROM rudderstack.product_added_to_wishlist pw
+          JOIN user_customer_mapping ucm ON pw.user_id = ucm.customerid
+          WHERE pw.user_id IS NOT NULL 
+            AND pw.category2 IS NOT NULL 
+            AND pw.category2 != ''
+            AND pw.timestamp > date_sub(current_date(), 180)
+        ),
+        category_counts AS (
+          SELECT 
+            user_main_id,
+            category_name,
+            COUNT(*) AS interaction_count
+          FROM browsing_events
+          GROUP BY user_main_id, category_name
+        ),
+        ranked_categories AS (
+          SELECT
+            user_main_id,
+            UPPER(category_name) as category_name,
+            interaction_count,
+            ROW_NUMBER() OVER (PARTITION BY user_main_id ORDER BY interaction_count DESC) AS rn
+          FROM category_counts
+        )
+        SELECT 
+          user_main_id,
+          concat_ws('|', collect_list(category_name)) AS category_affinity_interested
+        FROM (
+          SELECT 
+            user_main_id,
+            category_name
+          FROM ranked_categories
+          WHERE rn <= 10
+          ORDER BY user_main_id, interaction_count DESC
+        ) 
+        GROUP BY user_main_id
+      ids:
+        - select: "user_main_id"
+          type: main_id
+          entity: user
+ 
+  # NEW: Demographic data filtered by primary_customerid
+  - name: demographic_primary_filtered
+    model_type: sql_template
+    model_spec:
+      materialization:
+        output_type: table
+      single_sql: |
+        , user_primary_contact AS (
+          SELECT
+            cwr.user_main_id,
+            cwr.primary_customerid,
+            cr.contactid as primary_contactid
+          FROM {{ this.DeRef("models/contact_with_retail") }} cwr
+          JOIN sysdba.contact_retail cr
+            ON cwr.primary_customerid = cr.customerid
+        )
+        SELECT
+          upc.user_main_id,
+          d.prizm_seg,
+          d.prizm_seg_name,
+          d.target_segment,
+          nvl(d.TARGET_SEGMENT_NAME, 'Non-Target') as target_segment_name
+        FROM user_primary_contact upc
+        JOIN tableau_data.gen5y_contact_combined d
+          ON upc.primary_contactid = d.contactid
+      ids:
+        - select: "user_main_id"
+          type: main_id
+          entity: user
+
+
+  # NEW: Advisor data for mainline customers (seccode 'F6UJ9A000002')
+  - name: advisor_mainline_filtered
+    model_type: sql_template
+    model_spec:
+      materialization:
+        output_type: table
+      single_sql: |
+        , user_mainline_contact AS (
+          SELECT 
+            cwr.user_main_id,
+            cwr.mainline_customerid,
+            cr.contactid as mainline_contactid
+          FROM {{ this.DeRef("models/contact_with_retail") }} cwr
+          JOIN sysdba.contact_retail cr 
+            ON cwr.mainline_customerid = cr.customerid
+          WHERE cwr.mainline_customerid IS NOT NULL
+        )
+        SELECT 
+          umc.user_main_id,
+          ui.firstname as advisor_firstname,
+          ui.lastname as advisor_lastname,
+          ui.email as advisor_email,
+          ui.userid as advisor_id,
+          cr.storecode,
+          cr.previousaccountmanagerid as previous_advisor_id
+        FROM user_mainline_contact umc
+        JOIN sysdba.contact c ON umc.mainline_contactid = c.contactid
+        JOIN sysdba.contact_retail cr ON c.contactid = cr.contactid
+        LEFT JOIN sysdba.userinfo ui ON ui.userid = c.accountmanagerid
+        WHERE c.seccodeid = 'F6UJ9A000002'
+      ids:
+        - select: "user_main_id"
+          type: main_id
+          entity: user
+
+  # NEW: Advisor data for outlet customers (seccode 'F6UJ9A000004')
+  - name: advisor_outlet_filtered
+    model_type: sql_template
+    model_spec:
+      materialization:
+        output_type: table
+      single_sql: |
+        , user_outlet_contact AS (
+          SELECT 
+            cwr.user_main_id,
+            cwr.outlet_customerid,
+            cr.contactid as outlet_contactid
+          FROM {{ this.DeRef("models/contact_with_retail") }} cwr
+          JOIN sysdba.contact_retail cr 
+            ON cwr.outlet_customerid = cr.customerid
+          WHERE cwr.outlet_customerid IS NOT NULL
+        )
+        SELECT 
+          uoc.user_main_id,
+          ui.firstname as advisor_firstname,
+          ui.lastname as advisor_lastname,
+          ui.email as advisor_email,
+          ui.userid as advisor_id,
+          cr.storecode,
+          cr.previousaccountmanagerid as previous_advisor_id
+        FROM user_outlet_contact uoc
+        JOIN sysdba.contact c ON uoc.outlet_contactid = c.contactid
+        JOIN sysdba.contact_retail cr ON c.contactid = cr.contactid
+        LEFT JOIN sysdba.userinfo ui ON ui.userid = c.accountmanagerid
+        WHERE c.seccodeid = 'F6UJ9A000004'
+      ids:
+        - select: "user_main_id"
+          type: main_id
+          entity: user
+
+
+  # NEW: Mainline brand affinity (purchased) - seccode F6UJ9A000002, store != 997
+  - name: mainline_brand_affinity
+    model_type: sql_template
+    model_spec:
+      materialization:
+        output_type: table
+      single_sql: |
+        , user_customer_mapping AS (
+          -- Get all customer IDs associated with each stitched user
+          SELECT 
+            user_main_id,
+            other_id AS customerid
+          FROM {{ this.DeRef("models/user_id_stitcher") }}
+          WHERE other_id_type = 'user_id'
+        ),
+        brand_counts AS (
+          SELECT 
+            ucm.user_main_id,
+            UPPER(c.brand_name_eng) as brand_name_eng,
+            SUM(NVL(ti.qty, 0)) AS purchased_items
+          FROM user_customer_mapping ucm
+          JOIN vstore.customer cust ON ucm.customerid = cust.identificationno
+          JOIN vstore.transaction t ON cust.pkcustomerno = t.fkcustomerno
+          JOIN vstore.terminal te ON te.pkterminalid = t.fkterminalid
+          JOIN vstore.store st ON st.pkstoreno = te.fkstoreno
+          JOIN sysdba.SalesEntity se ON cust.identificationno = se.customerid
+          JOIN sysdba.contact_retail cr ON se.contactid = cr.contactid
+          JOIN sysdba.contact c2 ON cr.contactid = c2.contactid
+          LEFT JOIN vstore.tranitem ti ON ti.fktransactionid = t.pktransactionid
+          INNER JOIN vstore.sku s ON s.pksku = ti.fksku
+          INNER JOIN elcat.catalog c ON s.fkstyleno = SUBSTR(c.styleid, 1, 8)
+          WHERE NVL(ti.qty, 0) > 0 
+            AND t.fkTranType IN (10)
+            AND COALESCE(t.IsVoided, 'f') = 'f'
+            AND t.businessdate > date_sub(current_date(), 365 * 3)
+            AND c.brand_name_eng IS NOT NULL
+            AND c2.seccodeid = 'F6UJ9A000002'
+            AND st.pkstoreno != 997
+          GROUP BY ucm.user_main_id, UPPER(c.brand_name_eng)
+        ),
+        ranked_brands AS (
+          SELECT
+            user_main_id,
+            brand_name_eng,
+            purchased_items,
+            ROW_NUMBER() OVER (PARTITION BY user_main_id ORDER BY purchased_items DESC) AS rn
+          FROM brand_counts
+        )
+        SELECT 
+          user_main_id,
+          concat_ws('|', collect_list(brand_name_eng)) AS mainline_brand_affinity_purchased
+        FROM ranked_brands
+        WHERE rn <= 10
+        GROUP BY user_main_id
+      ids:
+        - select: "user_main_id"
+          type: main_id
+          entity: user
+
+  # NEW: Outlet brand affinity (purchased) - seccode F6UJ9A000004
+  - name: outlet_brand_affinity
+    model_type: sql_template
+    model_spec:
+      materialization:
+        output_type: table
+      single_sql: |
+        , user_customer_mapping AS (
+          -- Get all customer IDs associated with each stitched user
+          SELECT 
+            user_main_id,
+            other_id AS customerid
+          FROM {{ this.DeRef("models/user_id_stitcher") }}
+          WHERE other_id_type = 'user_id'
+        ),
+        brand_counts AS (
+          SELECT 
+            ucm.user_main_id,
+            UPPER(c.brand_name_eng) AS brand_name_eng,
+            SUM(NVL(ti.qty, 0)) AS purchased_items
+          FROM user_customer_mapping ucm
+          JOIN vstore.customer cust ON ucm.customerid = cust.identificationno
+          JOIN vstore.transaction t ON cust.pkcustomerno = t.fkcustomerno
+          JOIN vstore.terminal te ON te.pkterminalid = t.fkterminalid
+          JOIN vstore.store st ON st.pkstoreno = te.fkstoreno
+          JOIN sysdba.SalesEntity se ON cust.identificationno = se.customerid
+          JOIN sysdba.contact_retail cr ON se.contactid = cr.contactid
+          JOIN sysdba.contact c2 ON cr.contactid = c2.contactid
+          LEFT JOIN vstore.tranitem ti ON ti.fktransactionid = t.pktransactionid
+          INNER JOIN vstore.sku s ON s.pksku = ti.fksku
+          INNER JOIN elcat.catalog c ON s.fkstyleno = SUBSTR(c.styleid, 1, 8)
+          WHERE NVL(ti.qty, 0) > 0 
+            AND t.fkTranType IN (10)
+            AND COALESCE(t.IsVoided, 'f') = 'f'
+            AND t.businessdate > date_sub(current_date(), 365 * 3)
+            AND c.brand_name_eng IS NOT NULL
+            AND c2.seccodeid = 'F6UJ9A000004'
+          GROUP BY ucm.user_main_id, UPPER(c.brand_name_eng)
+        ),
+        ranked_brands AS (
+          SELECT
+            user_main_id,
+            brand_name_eng,
+            purchased_items,
+            ROW_NUMBER() OVER (PARTITION BY user_main_id ORDER BY purchased_items DESC) AS rn
+          FROM brand_counts
+        )
+        SELECT 
+          user_main_id,
+          concat_ws('|', collect_list(brand_name_eng)) AS outlet_brand_affinity_purchased
+        FROM ranked_brands
+        WHERE rn <= 10
+        GROUP BY user_main_id
+      ids:
+        - select: "user_main_id"
+          type: main_id
+          entity: user
+
+  # NEW: Final Cut brand affinity (purchased) - seccode F6UJ9A000002, store = 997
+  - name: finalcut_brand_affinity
+    model_type: sql_template
+    model_spec:
+      materialization:
+        output_type: table
+      single_sql: |
+        , user_customer_mapping AS (
+          -- Get all customer IDs associated with each stitched user
+          SELECT 
+            user_main_id,
+            other_id AS customerid
+          FROM {{ this.DeRef("models/user_id_stitcher") }}
+          WHERE other_id_type = 'user_id'
+        ),
+        brand_counts AS (
+          SELECT 
+            ucm.user_main_id,
+            UPPER(c.brand_name_eng) as brand_name_eng,
+            SUM(NVL(ti.qty, 0)) AS purchased_items
+          FROM user_customer_mapping ucm
+          JOIN vstore.customer cust ON ucm.customerid = cust.identificationno
+          JOIN vstore.transaction t ON cust.pkcustomerno = t.fkcustomerno
+          JOIN vstore.terminal te ON te.pkterminalid = t.fkterminalid
+          JOIN vstore.store st ON st.pkstoreno = te.fkstoreno
+          JOIN sysdba.SalesEntity se ON cust.identificationno = se.customerid
+          JOIN sysdba.contact_retail cr ON se.contactid = cr.contactid
+          JOIN sysdba.contact c2 ON cr.contactid = c2.contactid
+          LEFT JOIN vstore.tranitem ti ON ti.fktransactionid = t.pktransactionid
+          INNER JOIN vstore.sku s ON s.pksku = ti.fksku
+          INNER JOIN elcat.catalog c ON s.fkstyleno = SUBSTR(c.styleid, 1, 8)
+          WHERE NVL(ti.qty, 0) > 0 
+            AND t.fkTranType IN (10)
+            AND COALESCE(t.IsVoided, 'f') = 'f'
+            AND t.businessdate > date_sub(current_date(), 365 * 3)
+            AND c.brand_name_eng IS NOT NULL
+            AND c2.seccodeid = 'F6UJ9A000002'
+            AND st.pkstoreno = 997
+          GROUP BY ucm.user_main_id, UPPER(c.brand_name_eng)
+        ),
+        ranked_brands AS (
+          SELECT
+            user_main_id,
+            brand_name_eng,
+            purchased_items,
+            ROW_NUMBER() OVER (PARTITION BY user_main_id ORDER BY purchased_items DESC) AS rn
+          FROM brand_counts
+        )
+        SELECT 
+          user_main_id,
+          concat_ws('|', collect_list(brand_name_eng)) AS finalcut_brand_affinity_purchased
+        FROM ranked_brands
+        WHERE rn <= 10
+        GROUP BY user_main_id
+      ids:
+        - select: "user_main_id"
+          type: main_id
+          entity: user
+
+  # NEW: Mainline category affinity (purchased) - seccode F6UJ9A000002, store != 997
+  - name: mainline_category_affinity
+    model_type: sql_template
+    model_spec:
+      materialization:
+        output_type: table
+      single_sql: |
+        , user_customer_mapping AS (
+          -- Get all customer IDs associated with each stitched user
+          SELECT 
+            user_main_id,
+            other_id AS customerid
+          FROM {{ this.DeRef("models/user_id_stitcher") }}
+          WHERE other_id_type = 'user_id'
+        ),
+        category_counts AS (
+          SELECT 
+            ucm.user_main_id,
+            c.catagory_level_2a,
+            SUM(NVL(ti.qty, 0)) AS purchased_items
+          FROM user_customer_mapping ucm
+          JOIN vstore.customer cust ON ucm.customerid = cust.identificationno
+          JOIN vstore.transaction t ON cust.pkcustomerno = t.fkcustomerno
+          JOIN vstore.terminal te ON te.pkterminalid = t.fkterminalid
+          JOIN vstore.store st ON st.pkstoreno = te.fkstoreno
+          JOIN sysdba.SalesEntity se ON cust.identificationno = se.customerid
+          JOIN sysdba.contact_retail cr ON se.contactid = cr.contactid
+          JOIN sysdba.contact c2 ON cr.contactid = c2.contactid
+          LEFT JOIN vstore.tranitem ti ON ti.fktransactionid = t.pktransactionid
+          INNER JOIN vstore.sku s ON s.pksku = ti.fksku
+          INNER JOIN elcat.catalog c ON s.fkstyleno = SUBSTR(c.styleid, 1, 8)
+          WHERE NVL(ti.qty, 0) > 0 
+            AND t.fkTranType IN (10)
+            AND COALESCE(t.IsVoided, 'f') = 'f'
+            AND t.businessdate > date_sub(current_date(), 365 * 3)
+            AND c.catagory_level_2a IS NOT NULL
+            AND c2.seccodeid = 'F6UJ9A000002'
+            AND st.pkstoreno != 997
+          GROUP BY ucm.user_main_id, c.catagory_level_2a
+        ),
+        ranked_categories AS (
+          SELECT
+            user_main_id,
+            UPPER(catagory_level_2a) as catagory_level_2a,
+            purchased_items,
+            ROW_NUMBER() OVER (PARTITION BY user_main_id ORDER BY purchased_items DESC) AS rn
+          FROM category_counts
+        )
+        SELECT 
+          user_main_id,
+          concat_ws('|', collect_list(catagory_level_2a)) AS mainline_category_affinity_purchased
+        FROM ranked_categories
+        WHERE rn <= 10
+        GROUP BY user_main_id
+      ids:
+        - select: "user_main_id"
+          type: main_id
+          entity: user
+
+  # NEW: Outlet category affinity (purchased) - seccode F6UJ9A000004
+  - name: outlet_category_affinity
+    model_type: sql_template
+    model_spec:
+      materialization:
+        output_type: table
+      single_sql: |
+        , user_customer_mapping AS (
+          -- Get all customer IDs associated with each stitched user
+          SELECT 
+            user_main_id,
+            other_id AS customerid
+          FROM {{ this.DeRef("models/user_id_stitcher") }}
+          WHERE other_id_type = 'user_id'
+        ),
+        category_counts AS (
+          SELECT 
+            ucm.user_main_id,
+            c.catagory_level_2a,
+            SUM(NVL(ti.qty, 0)) AS purchased_items
+          FROM user_customer_mapping ucm
+          JOIN vstore.customer cust ON ucm.customerid = cust.identificationno
+          JOIN vstore.transaction t ON cust.pkcustomerno = t.fkcustomerno
+          JOIN vstore.terminal te ON te.pkterminalid = t.fkterminalid
+          JOIN vstore.store st ON st.pkstoreno = te.fkstoreno
+          JOIN sysdba.SalesEntity se ON cust.identificationno = se.customerid
+          JOIN sysdba.contact_retail cr ON se.contactid = cr.contactid
+          JOIN sysdba.contact c2 ON cr.contactid = c2.contactid
+          LEFT JOIN vstore.tranitem ti ON ti.fktransactionid = t.pktransactionid
+          INNER JOIN vstore.sku s ON s.pksku = ti.fksku
+          INNER JOIN elcat.catalog c ON s.fkstyleno = SUBSTR(c.styleid, 1, 8)
+          WHERE NVL(ti.qty, 0) > 0 
+            AND t.fkTranType IN (10)
+            AND COALESCE(t.IsVoided, 'f') = 'f'
+            AND t.businessdate > date_sub(current_date(), 365 * 3)
+            AND c.catagory_level_2a IS NOT NULL
+            AND c2.seccodeid = 'F6UJ9A000004'
+          GROUP BY ucm.user_main_id, c.catagory_level_2a
+        ),
+        ranked_categories AS (
+          SELECT
+            user_main_id,
+            UPPER(catagory_level_2a) as catagory_level_2a,
+            purchased_items,
+            ROW_NUMBER() OVER (PARTITION BY user_main_id ORDER BY purchased_items DESC) AS rn
+          FROM category_counts
+        )
+        SELECT 
+          user_main_id,
+          concat_ws('|', collect_list(catagory_level_2a)) AS outlet_category_affinity_purchased
+        FROM ranked_categories
+        WHERE rn <= 10
+        GROUP BY user_main_id
+      ids:
+        - select: "user_main_id"
+          type: main_id
+          entity: user
+
+  # NEW: Final Cut category affinity (purchased) - seccode F6UJ9A000002, store = 997
+  - name: finalcut_category_affinity
+    model_type: sql_template
+    model_spec:
+      materialization:
+        output_type: table
+      single_sql: |
+        , user_customer_mapping AS (
+          -- Get all customer IDs associated with each stitched user
+          SELECT 
+            user_main_id,
+            other_id AS customerid
+          FROM {{ this.DeRef("models/user_id_stitcher") }}
+          WHERE other_id_type = 'user_id'
+        ),
+        category_counts AS (
+          SELECT 
+            ucm.user_main_id,
+            c.catagory_level_2a,
+            SUM(NVL(ti.qty, 0)) AS purchased_items
+          FROM user_customer_mapping ucm
+          JOIN vstore.customer cust ON ucm.customerid = cust.identificationno
+          JOIN vstore.transaction t ON cust.pkcustomerno = t.fkcustomerno
+          JOIN vstore.terminal te ON te.pkterminalid = t.fkterminalid
+          JOIN vstore.store st ON st.pkstoreno = te.fkstoreno
+          JOIN sysdba.SalesEntity se ON cust.identificationno = se.customerid
+          JOIN sysdba.contact_retail cr ON se.contactid = cr.contactid
+          JOIN sysdba.contact c2 ON cr.contactid = c2.contactid
+          LEFT JOIN vstore.tranitem ti ON ti.fktransactionid = t.pktransactionid
+          INNER JOIN vstore.sku s ON s.pksku = ti.fksku
+          INNER JOIN elcat.catalog c ON s.fkstyleno = SUBSTR(c.styleid, 1, 8)
+          WHERE NVL(ti.qty, 0) > 0 
+            AND t.fkTranType IN (10)
+            AND COALESCE(t.IsVoided, 'f') = 'f'
+            AND t.businessdate > date_sub(current_date(), 365 * 3)
+            AND c.catagory_level_2a IS NOT NULL
+            AND c2.seccodeid = 'F6UJ9A000002'
+            AND st.pkstoreno = 997
+          GROUP BY ucm.user_main_id, c.catagory_level_2a
+        ),
+        ranked_categories AS (
+          SELECT
+            user_main_id,
+            UPPER(catagory_level_2a) as catagory_level_2a,
+            purchased_items,
+            ROW_NUMBER() OVER (PARTITION BY user_main_id ORDER BY purchased_items DESC) AS rn
+          FROM category_counts
+        )
+        SELECT 
+          user_main_id,
+          concat_ws('|', collect_list(catagory_level_2a)) AS finalcut_category_affinity_purchased
+        FROM ranked_categories
+        WHERE rn <= 10
+        GROUP BY user_main_id
+      ids:
+        - select: "user_main_id"
+          type: main_id
+          entity: user
+
+  # NEW: Mainline brand affinity interested (browsing) - store_id 990
+  - name: mainline_brand_affinity_interested_model
+    model_type: sql_template
+    model_spec:
+      materialization:
+        output_type: table
+      single_sql: |
+        , user_customer_mapping AS (
+          -- Get all customer IDs associated with each stitched user
+          SELECT 
+            user_main_id,
+            other_id AS customerid
+          FROM {{ this.DeRef("models/user_id_stitcher") }}
+          WHERE other_id_type = 'user_id'
+        ),
+        browsing_events AS (
+          -- Combine product viewed and wishlist events
+          SELECT 
+            ucm.user_main_id,
+            pv.brand_en as brand_name,
+            'viewed' as event_type,
+            pv.timestamp
+          FROM rudderstack.product_viewed pv
+          JOIN user_customer_mapping ucm ON pv.user_id = ucm.customerid
+          WHERE pv.user_id IS NOT NULL 
+            AND pv.brand_en IS NOT NULL 
+            AND pv.brand_en != ''
+            AND pv.timestamp > date_sub(current_date(), 180)
+            AND pv.store_id = 990
+
+          UNION ALL
+
+          SELECT 
+            ucm.user_main_id,
+            pw.brand_en as brand_name,
+            'added_to_wishlist' as event_type,
+            pw.timestamp
+          FROM rudderstack.product_added_to_wishlist pw
+          JOIN user_customer_mapping ucm ON pw.user_id = ucm.customerid
+          WHERE pw.user_id IS NOT NULL 
+            AND pw.brand_en IS NOT NULL 
+            AND pw.brand_en != ''
+            AND pw.timestamp > date_sub(current_date(), 180)
+            AND pw.store_id = 990
+        ),
+        brand_counts AS (
+          SELECT 
+            user_main_id,
+            brand_name,
+            COUNT(*) AS interaction_count
+          FROM browsing_events
+          GROUP BY user_main_id, brand_name
+        ),
+        ranked_brands AS (
+          SELECT
+            user_main_id,
+            UPPER(brand_name) as brand_name,
+            interaction_count,
+            ROW_NUMBER() OVER (PARTITION BY user_main_id ORDER BY interaction_count DESC) AS rn
+          FROM brand_counts
+        )
+        SELECT 
+          user_main_id,
+          concat_ws('|', collect_list(brand_name)) AS mainline_brand_affinity_interested
+        FROM ranked_brands
+        WHERE rn <= 10
+        GROUP BY user_main_id
+      ids:
+        - select: "user_main_id"
+          type: main_id
+          entity: user
+
+  # NEW: Final Cut brand affinity interested (browsing) - store_id 997
+  - name: finalcut_brand_affinity_interested_model
+    model_type: sql_template
+    model_spec:
+      materialization:
+        output_type: table
+      single_sql: |
+        , user_customer_mapping AS (
+          -- Get all customer IDs associated with each stitched user
+          SELECT 
+            user_main_id,
+            other_id AS customerid
+          FROM {{ this.DeRef("models/user_id_stitcher") }}
+          WHERE other_id_type = 'user_id'
+        ),
+        browsing_events AS (
+          -- Combine product viewed and wishlist events
+          SELECT 
+            ucm.user_main_id,
+            pv.brand_en as brand_name,
+            'viewed' as event_type,
+            pv.timestamp
+          FROM rudderstack.product_viewed pv
+          JOIN user_customer_mapping ucm ON pv.user_id = ucm.customerid
+          WHERE pv.user_id IS NOT NULL 
+            AND pv.brand_en IS NOT NULL 
+            AND pv.brand_en != ''
+            AND pv.timestamp > date_sub(current_date(), 180)
+            AND pv.store_id = 997
+
+          UNION ALL
+
+          SELECT 
+            ucm.user_main_id,
+            pw.brand_en as brand_name,
+            'added_to_wishlist' as event_type,
+            pw.timestamp
+          FROM rudderstack.product_added_to_wishlist pw
+          JOIN user_customer_mapping ucm ON pw.user_id = ucm.customerid
+          WHERE pw.user_id IS NOT NULL 
+            AND pw.brand_en IS NOT NULL 
+            AND pw.brand_en != ''
+            AND pw.timestamp > date_sub(current_date(), 180)
+            AND pw.store_id = 997
+        ),
+        brand_counts AS (
+          SELECT 
+            user_main_id,
+            brand_name,
+            COUNT(*) AS interaction_count
+          FROM browsing_events
+          GROUP BY user_main_id, brand_name
+        ),
+        ranked_brands AS (
+          SELECT
+            user_main_id,
+            UPPER(brand_name) as brand_name,
+            interaction_count,
+            ROW_NUMBER() OVER (PARTITION BY user_main_id ORDER BY interaction_count DESC) AS rn
+          FROM brand_counts
+        )
+        SELECT 
+          user_main_id,
+          concat_ws('|', collect_list(brand_name)) AS finalcut_brand_affinity_interested
+        FROM ranked_brands
+        WHERE rn <= 10
+        GROUP BY user_main_id
+      ids:
+        - select: "user_main_id"
+          type: main_id
+          entity: user
+
+  # NEW: Mainline category affinity interested (browsing) - store_id 990
+  - name: mainline_category_affinity_interested_model
+    model_type: sql_template
+    model_spec:
+      materialization:
+        output_type: table
+      single_sql: |
+        , user_customer_mapping AS (
+          -- Get all customer IDs associated with each stitched user
+          SELECT 
+            user_main_id,
+            other_id AS customerid
+          FROM {{ this.DeRef("models/user_id_stitcher") }}
+          WHERE other_id_type = 'user_id'
+        ),
+        browsing_events AS (
+          -- Combine product viewed and wishlist events
+          SELECT 
+            ucm.user_main_id,
+            pv.category2 as category_name,
+            'viewed' as event_type,
+            pv.timestamp
+          FROM rudderstack.product_viewed pv
+          JOIN user_customer_mapping ucm ON pv.user_id = ucm.customerid
+          WHERE pv.user_id IS NOT NULL 
+            AND pv.category2 IS NOT NULL 
+            AND pv.category2 != ''
+            AND pv.timestamp > date_sub(current_date(), 180)
+            AND pv.store_id = 990
+
+          UNION ALL
+
+          SELECT 
+            ucm.user_main_id,
+            pw.category2 as category_name,
+            'added_to_wishlist' as event_type,
+            pw.timestamp
+          FROM rudderstack.product_added_to_wishlist pw
+          JOIN user_customer_mapping ucm ON pw.user_id = ucm.customerid
+          WHERE pw.user_id IS NOT NULL 
+            AND pw.category2 IS NOT NULL 
+            AND pw.category2 != ''
+            AND pw.timestamp > date_sub(current_date(), 180)
+            AND pw.store_id = 990
+        ),
+        category_counts AS (
+          SELECT 
+            user_main_id,
+            category_name,
+            COUNT(*) AS interaction_count
+          FROM browsing_events
+          GROUP BY user_main_id, category_name
+        ),
+        ranked_categories AS (
+          SELECT
+            user_main_id,
+            UPPER(category_name) as category_name,
+            interaction_count,
+            ROW_NUMBER() OVER (PARTITION BY user_main_id ORDER BY interaction_count DESC) AS rn
+          FROM category_counts
+        )
+        SELECT 
+          user_main_id,
+          concat_ws('|', collect_list(category_name)) AS mainline_category_affinity_interested
+        FROM ranked_categories
+        WHERE rn <= 10
+        GROUP BY user_main_id
+      ids:
+        - select: "user_main_id"
+          type: main_id
+          entity: user
+
+  # NEW: Final Cut category affinity interested (browsing) - store_id 997
+  - name: finalcut_category_affinity_interested_model
+    model_type: sql_template
+    model_spec:
+      materialization:
+        output_type: table
+      single_sql: |
+        , user_customer_mapping AS (
+          -- Get all customer IDs associated with each stitched user
+          SELECT 
+            user_main_id,
+            other_id AS customerid
+          FROM {{ this.DeRef("models/user_id_stitcher") }}
+          WHERE other_id_type = 'user_id'
+        ),
+        browsing_events AS (
+          -- Combine product viewed and wishlist events
+          SELECT 
+            ucm.user_main_id,
+            pv.category2 as category_name,
+            'viewed' as event_type,
+            pv.timestamp
+          FROM rudderstack.product_viewed pv
+          JOIN user_customer_mapping ucm ON pv.user_id = ucm.customerid
+          WHERE pv.user_id IS NOT NULL 
+            AND pv.category2 IS NOT NULL 
+            AND pv.category2 != ''
+            AND pv.timestamp > date_sub(current_date(), 180)
+            AND pv.store_id = 997
+
+          UNION ALL
+
+          SELECT 
+            ucm.user_main_id,
+            pw.category2 as category_name,
+            'added_to_wishlist' as event_type,
+            pw.timestamp
+          FROM rudderstack.product_added_to_wishlist pw
+          JOIN user_customer_mapping ucm ON pw.user_id = ucm.customerid
+          WHERE pw.user_id IS NOT NULL 
+            AND pw.category2 IS NOT NULL 
+            AND pw.category2 != ''
+            AND pw.timestamp > date_sub(current_date(), 180)
+            AND pw.store_id = 997
+        ),
+        category_counts AS (
+          SELECT 
+            user_main_id,
+            category_name,
+            COUNT(*) AS interaction_count
+          FROM browsing_events
+          GROUP BY user_main_id, category_name
+        ),
+        ranked_categories AS (
+          SELECT
+            user_main_id,
+            UPPER(category_name) as category_name,
+            interaction_count,
+            ROW_NUMBER() OVER (PARTITION BY user_main_id ORDER BY interaction_count DESC) AS rn
+          FROM category_counts
+        )
+        SELECT 
+          user_main_id,
+          concat_ws('|', collect_list(category_name)) AS finalcut_category_affinity_interested
+        FROM ranked_categories
+        WHERE rn <= 10
+        GROUP BY user_main_id
+      ids:
+        - select: "user_main_id"
+          type: main_id
+          entity: user
+
+  - name: email_resolved
+    model_type: sql_template
+    model_spec:
+      materialization:
+        output_type: table
+      single_sql: |
+        , primary_email AS (
+          SELECT
+            user_main_id,
+            LOWER(primary_email) AS contact_primary_email
+          FROM {{ this.DeRef("models/contact_primary_filtered") }}
+          WHERE email IS NOT NULL AND email != ''
+        ),
+  
+        -- Step 2: Get all stitched contact IDs for fallback email lookup
+        user_contacts AS (
+          SELECT 
+            user_main_id,
+            other_id AS contactid
+          FROM {{ this.DeRef("models/user_id_stitcher") }}
+          WHERE other_id_type = 'contact_id'
+        ),
+        
+        -- Get primary contact ID to exclude from fallback
+        primary_contacts AS (
+          SELECT 
+            cpf.user_main_id,
+            cpf.contactid as primary_contactid
+          FROM {{ this.DeRef("models/contact_primary_filtered") }} cpf
+        ),
+        
+        -- Fallback emails from other stitched contacts (excluding primary)
+        stitched_contact_emails AS (
+          SELECT
+            uc.user_main_id,
+            LOWER(c.email) AS contact_secondary_email,
+            ROW_NUMBER() OVER (PARTITION BY uc.user_main_id ORDER BY c.createdate DESC) as rn
+          FROM user_contacts uc
+          JOIN sysdba.contact c ON uc.contactid = c.contactid
+          LEFT JOIN primary_contacts pc ON uc.user_main_id = pc.user_main_id 
+            AND uc.contactid = pc.primary_contactid
+          WHERE c.email IS NOT NULL 
+            AND c.email != ''
+            AND pc.primary_contactid IS NULL  -- Exclude primary contact
+        ),
+  
+        -- Step 3: Fallback email from RudderStack identifies
+        stitcher_email AS (
+          SELECT
+            user_main_id,
+            LOWER(other_id) AS stitched_email,
+            ROW_NUMBER() OVER (PARTITION BY user_main_id ORDER BY other_id) as rn
+          FROM {{ this.DeRef("models/user_id_stitcher") }}
+          WHERE other_id_type = 'email'
+        )
+  
+        -- Final prioritized selection
+        SELECT DISTINCT
+          COALESCE(pe.user_main_id, sce.user_main_id, se.user_main_id) AS user_main_id,
+          COALESCE(
+            trim(pe.contact_primary_email),
+            trim(sce.contact_secondary_email),
+            trim(se.stitched_email)
+          ) AS resolved_email
+        FROM primary_email pe
+        FULL OUTER JOIN (
+          SELECT user_main_id, contact_secondary_email 
+          FROM stitched_contact_emails 
+          WHERE rn = 1
+        ) sce ON pe.user_main_id = sce.user_main_id
+        FULL OUTER JOIN (
+          SELECT user_main_id, stitched_email 
+          FROM stitcher_email 
+          WHERE rn = 1
+        ) se ON COALESCE(pe.user_main_id, sce.user_main_id) = se.user_main_id
+        WHERE COALESCE(
+          pe.contact_primary_email,
+          sce.contact_secondary_email,
+          se.stitched_email
+        ) IS NOT NULL
+      ids:
+        - select: "user_main_id"
+          type: main_id
+          entity: user
+
+  - name: language_preference_filled
+    model_type: sql_template
+    model_spec:
+      materialization:
+        output_type: table
+      single_sql: |
+        , all_users AS (
+          SELECT DISTINCT user_main_id
+          FROM {{ this.DeRef("models/user_id_stitcher") }}
+        ),
+        langs AS (
+          SELECT
+            user_main_id,
+            CASE
+              WHEN UPPER(languagepref) LIKE 'EN%' OR UPPER(languagepref) IN ('US','UK','ENG') THEN 'en'
+              WHEN UPPER(languagepref) LIKE 'FR%'                                               THEN 'fr'
+              ELSE 'en'
+            END AS languagepref
+          FROM {{ this.DeRef("models/contact_retail_primary_filtered") }}
+        )
+        SELECT
+          au.user_main_id,
+          COALESCE(l.languagepref,'en') AS languagepref
+        FROM all_users au
+        LEFT JOIN langs l
+          ON au.user_main_id = l.user_main_id
+      ids:
+        - select: "user_main_id"
+          type: main_id
+          entity: user
+
+  # NEW: HR (Mainline) Lifecycle Stage mapping
+  - name: hr_lifecycle_stage_model
+    model_type: sql_template
+    model_spec:
+      materialization:
+        output_type: table
+      single_sql: |
+        , user_mainline_mapping AS (
+          SELECT 
+            cwr.user_main_id,
+            cwr.mainline_customerid
+          FROM {{ this.DeRef("models/contact_with_retail") }} cwr
+          WHERE cwr.mainline_customerid IS NOT NULL
+        )
+        SELECT 
+          um.user_main_id,
+          lcs.trans_to as hr_lifecycle_stage,
+          lcs.last_change_date as hr_lifecycle_last_change_dt
+        FROM user_mainline_mapping um
+        JOIN customer.v_client_lifecycle_current_status_braze lcs
+          ON um.mainline_customerid = lcs.customerid
+      ids:
+        - select: "user_main_id"
+          type: main_id
+          entity: user
+
+
+  # NEW: OL (Outlet) Lifecycle Stage mapping  
+  - name: ol_lifecycle_stage_model
+    model_type: sql_template
+    model_spec:
+      materialization:
+        output_type: table
+      single_sql: |
+        , user_outlet_mapping AS (
+          SELECT 
+            cwr.user_main_id,
+            cwr.outlet_customerid
+          FROM {{ this.DeRef("models/contact_with_retail") }} cwr
+          WHERE cwr.outlet_customerid IS NOT NULL
+        )
+        SELECT 
+          um.user_main_id,
+          lcs.trans_to as ol_lifecycle_stage,
+          lcs.last_change_date as ol_lifecycle_last_change_dt
+        FROM user_outlet_mapping um
+        JOIN customer.v_client_lifecycle_current_status_braze lcs
+          ON um.outlet_customerid = lcs.customerid
+      ids:
+        - select: "user_main_id"
+          type: main_id
+          entity: user

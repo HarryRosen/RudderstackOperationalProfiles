@@ -1,0 +1,606 @@
+models:
+  - name: mainline_sales
+    model_type: sql_template
+    model_spec:
+      materialization:
+        output_type: table
+      single_sql: |
+        , user_customer_mapping AS (
+          -- Get all customer IDs associated with each stitched user
+          SELECT 
+            user_main_id,
+            other_id AS customerid
+          FROM {{ this.DeRef("models/user_id_stitcher") }}
+          WHERE other_id_type = 'user_id'
+        ),
+        YearStart AS (
+          SELECT MAX(cal.TradingDate) AS CYStart
+          FROM custom.Calendar cal
+          WHERE date_format(cal.TradingDate, 'MMdd') = '0201'
+          AND cal.TradingDate <= current_date()
+        ),
+        mainline_transactions AS (
+          SELECT 
+            ucm.user_main_id,
+            txn.BusinessDate,
+            st.webind,
+            txi.Qty * txi.SellingPrice AS sales_amount
+          FROM user_customer_mapping ucm
+          JOIN vstore.Customer cus ON ucm.customerid = cus.IdentificationNo
+          JOIN sysdba.SalesEntity se ON cus.IdentificationNo = se.CustomerID
+          JOIN sysdba.contact_retail cr ON se.ContactID = cr.contactid
+          JOIN sysdba.contact c ON cr.contactid = c.contactid
+          JOIN vstore.Transaction txn ON cus.pkCustomerNo = txn.fkCustomerNo
+          JOIN vstore.terminal te ON te.pkterminalid = txn.fkterminalid
+          JOIN vstore.store st ON st.pkstoreno = te.fkstoreno
+          JOIN vstore.TranItem txi ON txn.pkTransactionId = txi.fkTransactionId
+          WHERE txn.fkTranType IN (10)
+            AND COALESCE(txn.IsVoided, 'f') = 'f'
+            AND COALESCE(txi.IsVoided, 'f') = 'f'
+            AND c.seccodeid = 'F6UJ9A000002'
+            AND te.fkstoreno != 997
+        ),
+        with_year_start AS (
+          SELECT mt.*, ys.CYStart
+          FROM mainline_transactions mt
+          CROSS JOIN YearStart ys
+        )
+        SELECT 
+          user_main_id,
+          MAX(BusinessDate) AS lasttrans,
+          MAX(CASE WHEN webind = 'N' THEN BusinessDate ELSE NULL END) AS laststoretrans,
+          MAX(CASE WHEN webind = 'Y' THEN BusinessDate ELSE NULL END) AS lastonlinetrans,
+          MIN(BusinessDate) AS firsttransactiondate,
+          COALESCE(SUM(sales_amount), 0) / 100 AS lifetime_sales,
+          COALESCE(SUM(CASE WHEN BusinessDate >= date_sub(current_date(), 7 * 365) 
+                            THEN sales_amount ELSE 0 END), 0) / 100 AS sevenyearsales,
+          COALESCE(SUM(CASE WHEN BusinessDate >= date_sub(current_date(), 3 * 365) 
+                            THEN sales_amount ELSE 0 END), 0) / 100 AS threeyearsales,
+          COALESCE(SUM(CASE WHEN BusinessDate >= date_sub(current_date(), 365) 
+                            THEN sales_amount ELSE 0 END), 0) / 100 AS oneyearsales,
+          COALESCE(SUM(CASE WHEN BusinessDate >= CYStart THEN sales_amount ELSE 0 END), 0) / 100 AS sales_ytd
+        FROM with_year_start
+        GROUP BY user_main_id
+      ids:
+        - select: "user_main_id"
+          type: main_id
+          entity: user
+
+  - name: finalcut_sales
+    model_type: sql_template
+    model_spec:
+      materialization:
+        output_type: table
+      single_sql: |
+        , user_customer_mapping AS (
+          -- Get all customer IDs associated with each stitched user
+          SELECT 
+            user_main_id,
+            other_id AS customerid
+          FROM {{ this.DeRef("models/user_id_stitcher") }}
+          WHERE other_id_type = 'user_id'
+        ),
+        YearStart AS (
+          SELECT MAX(cal.TradingDate) AS CYStart
+          FROM custom.Calendar cal
+          WHERE date_format(cal.TradingDate, 'MMdd') = '0201'
+          AND cal.TradingDate <= current_date()
+        ),
+        finalcut_transactions AS (
+          SELECT 
+            ucm.user_main_id,
+            txn.BusinessDate,
+            st.webind,
+            txi.Qty * txi.SellingPrice AS sales_amount
+          FROM user_customer_mapping ucm
+          JOIN vstore.Customer cus ON ucm.customerid = cus.IdentificationNo
+          JOIN sysdba.SalesEntity se ON cus.IdentificationNo = se.CustomerID
+          JOIN sysdba.contact_retail cr ON se.ContactID = cr.contactid
+          JOIN sysdba.contact c ON cr.contactid = c.contactid
+          JOIN vstore.Transaction txn ON cus.pkCustomerNo = txn.fkCustomerNo
+          JOIN vstore.terminal te ON te.pkterminalid = txn.fkterminalid
+          JOIN vstore.store st ON st.pkstoreno = te.fkstoreno
+          JOIN vstore.TranItem txi ON txn.pkTransactionId = txi.fkTransactionId
+          WHERE txn.fkTranType IN (10)
+            AND COALESCE(txn.IsVoided, 'f') = 'f'
+            AND COALESCE(txi.IsVoided, 'f') = 'f'
+            AND c.seccodeid = 'F6UJ9A000002'
+            AND te.fkstoreno = 997
+        ),
+        with_year_start AS (
+          SELECT fct.*, ys.CYStart
+          FROM finalcut_transactions fct
+          CROSS JOIN YearStart ys
+        )
+        SELECT 
+          user_main_id,
+          MAX(BusinessDate) AS lasttrans,
+          MAX(CASE WHEN webind = 'N' THEN BusinessDate ELSE NULL END) AS laststoretrans,
+          MAX(CASE WHEN webind = 'Y' THEN BusinessDate ELSE NULL END) AS lastonlinetrans,
+          MIN(BusinessDate) AS firsttransactiondate,
+          COALESCE(SUM(sales_amount), 0) / 100 AS lifetime_sales,
+          COALESCE(SUM(CASE WHEN BusinessDate >= date_sub(current_date(), 7 * 365) 
+                            THEN sales_amount ELSE 0 END), 0) / 100 AS sevenyearsales,
+          COALESCE(SUM(CASE WHEN BusinessDate >= date_sub(current_date(), 3 * 365) 
+                            THEN sales_amount ELSE 0 END), 0) / 100 AS threeyearsales,
+          COALESCE(SUM(CASE WHEN BusinessDate >= date_sub(current_date(), 365) 
+                            THEN sales_amount ELSE 0 END), 0) / 100 AS oneyearsales,
+          COALESCE(SUM(CASE WHEN BusinessDate >= CYStart THEN sales_amount ELSE 0 END), 0) / 100 AS sales_ytd
+        FROM with_year_start
+        GROUP BY user_main_id
+      ids:
+        - select: "user_main_id"
+          type: main_id
+          entity: user
+
+  - name: outlet_sales
+    model_type: sql_template
+    model_spec:
+      materialization:
+        output_type: table
+      single_sql: |
+        , user_customer_mapping AS (
+          -- Get all customer IDs associated with each stitched user
+          SELECT 
+            user_main_id,
+            other_id AS customerid
+          FROM {{ this.DeRef("models/user_id_stitcher") }}
+          WHERE other_id_type = 'user_id'
+        ),
+        YearStart AS (
+          SELECT MAX(cal.TradingDate) AS CYStart
+          FROM custom.Calendar cal
+          WHERE date_format(cal.TradingDate, 'MMdd') = '0201'
+          AND cal.TradingDate <= current_date()
+        ),
+        outlet_transactions AS (
+          SELECT 
+            ucm.user_main_id,
+            txn.BusinessDate,
+            st.webind,
+            txi.Qty * txi.SellingPrice AS sales_amount
+          FROM user_customer_mapping ucm
+          JOIN vstore.Customer cus ON ucm.customerid = cus.IdentificationNo
+          JOIN sysdba.SalesEntity se ON cus.IdentificationNo = se.CustomerID
+          JOIN sysdba.contact_retail cr ON se.ContactID = cr.contactid
+          JOIN sysdba.contact c ON cr.contactid = c.contactid
+          JOIN vstore.Transaction txn ON cus.pkCustomerNo = txn.fkCustomerNo
+          JOIN vstore.terminal te ON te.pkterminalid = txn.fkterminalid
+          JOIN vstore.store st ON st.pkstoreno = te.fkstoreno
+          JOIN vstore.TranItem txi ON txn.pkTransactionId = txi.fkTransactionId
+          WHERE txn.fkTranType IN (10)
+            AND COALESCE(txn.IsVoided, 'f') = 'f'
+            AND COALESCE(txi.IsVoided, 'f') = 'f'
+            AND c.seccodeid = 'F6UJ9A000004'
+        ),
+        with_year_start AS (
+          SELECT ot.*, ys.CYStart
+          FROM outlet_transactions ot
+          CROSS JOIN YearStart ys
+        )
+        SELECT 
+          user_main_id,
+          MAX(BusinessDate) AS lasttrans,
+          MAX(CASE WHEN webind = 'N' THEN BusinessDate ELSE NULL END) AS laststoretrans,
+          MAX(CASE WHEN webind = 'Y' THEN BusinessDate ELSE NULL END) AS lastonlinetrans,
+          MIN(BusinessDate) AS firsttransactiondate,
+          COALESCE(SUM(sales_amount), 0) / 100 AS lifetime_sales,
+          COALESCE(SUM(CASE WHEN BusinessDate >= date_sub(current_date(), 7 * 365) 
+                            THEN sales_amount ELSE 0 END), 0) / 100 AS sevenyearsales,
+          COALESCE(SUM(CASE WHEN BusinessDate >= date_sub(current_date(), 3 * 365) 
+                            THEN sales_amount ELSE 0 END), 0) / 100 AS threeyearsales,
+          COALESCE(SUM(CASE WHEN BusinessDate >= date_sub(current_date(), 365) 
+                            THEN sales_amount ELSE 0 END), 0) / 100 AS oneyearsales,
+          COALESCE(SUM(CASE WHEN BusinessDate >= CYStart THEN sales_amount ELSE 0 END), 0) / 100 AS sales_ytd
+        FROM with_year_start
+        GROUP BY user_main_id
+      ids:
+        - select: "user_main_id"
+          type: main_id
+          entity: user
+
+  - name: combined_sales
+    model_type: sql_template
+    model_spec:
+      materialization:
+        output_type: table
+      single_sql: |
+        , user_customer_mapping AS (
+          -- Get all customer IDs associated with each stitched user
+          SELECT 
+            user_main_id,
+            other_id AS customerid
+          FROM {{ this.DeRef("models/user_id_stitcher") }}
+          WHERE other_id_type = 'user_id'
+        ),
+        YearStart AS (
+          SELECT MAX(cal.TradingDate) AS CYStart
+          FROM custom.Calendar cal
+          WHERE date_format(cal.TradingDate, 'MMdd') = '0201'
+          AND cal.TradingDate <= current_date()
+        ),
+        sales_data AS (
+          SELECT 
+            ucm.user_main_id,
+            MAX(txn.businessdate) AS last_trans,
+            MAX(CASE WHEN st.webind = 'N' THEN txn.businessdate ELSE NULL END) AS last_store_trans,
+            MAX(CASE WHEN st.webind = 'Y' THEN txn.businessdate ELSE NULL END) AS last_online_trans,
+            MIN(txn.businessdate) AS first_transaction_date,
+            COALESCE(SUM(txi.qty * txi.sellingprice), 0) / 100 AS lifetime_sales,
+            COALESCE(SUM(CASE WHEN txn.businessdate >= date_sub(current_date(), 7 * 365) THEN (txi.qty * txi.sellingprice) / 100 ELSE 0 END), 0) AS seven_year_sales,
+            COALESCE(SUM(CASE WHEN txn.businessdate >= date_sub(current_date(), 3 * 365) THEN (txi.qty * txi.sellingprice) / 100 ELSE 0 END), 0) AS three_year_sales,
+            COALESCE(SUM(CASE WHEN txn.businessdate >= date_sub(current_date(), 365) THEN (txi.qty * txi.sellingprice) / 100 ELSE 0 END), 0) AS one_year_sales,
+            COALESCE(SUM(CASE WHEN txn.businessDate >= (select CYStart from YearStart) THEN (txi.qty * txi.sellingprice) / 100 ELSE 0 END), 0) AS sales_ytd
+          FROM user_customer_mapping ucm
+          JOIN vstore.Customer cus ON ucm.customerid = cus.identificationno
+          JOIN sysdba.SalesEntity se ON cus.identificationno = se.customerid
+          JOIN sysdba.contact_retail cr ON se.contactid = cr.contactid
+          JOIN sysdba.contact c ON cr.contactid = c.contactid
+          JOIN vstore.Transaction txn ON cus.pkcustomerno = txn.fkcustomerno
+          JOIN vstore.terminal te ON te.pkterminalid = txn.fkterminalid
+          JOIN vstore.store st ON st.pkstoreno = te.fkstoreno
+          JOIN vstore.TranItem txi ON txn.pktransactionid = txi.fktransactionid
+          WHERE txn.fktrantype IN (10)
+            AND COALESCE(txn.isvoided, 'f') = 'f'
+            AND COALESCE(txi.isvoided, 'f') = 'f'
+            AND c.seccodeid IN ('F6UJ9A000002', 'F6UJ9A000004')
+          GROUP BY ucm.user_main_id
+        )
+        SELECT 
+          user_main_id,
+          last_trans,
+          last_store_trans,
+          last_online_trans,
+          first_transaction_date,
+          lifetime_sales,
+          seven_year_sales,
+          three_year_sales,
+          one_year_sales,
+          sales_ytd
+        FROM sales_data
+      ids:
+        - select: "user_main_id"
+          type: main_id
+          entity: user
+
+
+  # NEW: Customer AXR (Acquisition/Expansion/Retention) status filtered by primary_customerid
+  - name: customer_axr_status
+    model_type: sql_template
+    model_spec:
+      materialization:
+        output_type: table
+      single_sql: |
+        , user_primary_contact AS (
+          SELECT 
+            cwr.user_main_id,
+            cwr.primary_customerid,
+            cr.contactid as primary_contactid
+          FROM {{ this.DeRef("models/contact_with_retail") }} cwr
+          JOIN sysdba.contact_retail cr 
+            ON cwr.primary_customerid = cr.customerid
+        )
+        SELECT 
+          upc.user_main_id,
+          MAX(a.PURCHASE_VISIT_SEQ) as last_pur_visit_seq,
+          CASE 
+            WHEN MAX(a.CONTACT_ID) IS NULL THEN 'acquisition'
+            WHEN DATEDIFF(DAY, MIN(COALESCE(a.VISIT_ACTUAL_DATE, a.txn_dt)), current_date()) < 365
+              THEN 'expansion'
+            WHEN MAX(a.PURCHASE_VISIT_SEQ) < 4
+                   AND DATEDIFF(DAY, MAX(CASE WHEN a.PURCHASE_VISIT_SEQ IS NOT NULL THEN COALESCE(a.VISIT_ACTUAL_DATE, a.txn_dt) END), current_date()) <= 1095
+              THEN 'expansion'
+            WHEN DATEDIFF(DAY, MAX(CASE WHEN a.PURCHASE_VISIT_SEQ IS NOT NULL THEN COALESCE(a.VISIT_ACTUAL_DATE, a.txn_dt) END), current_date()) > 1095
+              THEN 'reactivation'
+            ELSE 'retention'
+          END as next_axr_status
+        FROM user_primary_contact upc
+        JOIN sysdba.contact c ON upc.primary_contactid = c.contactid
+        LEFT JOIN customer.axr_base a ON c.contactid = a.CONTACT_ID
+        WHERE COALESCE(c.TYPE, '01') IN ('01', '91', '93')
+          AND COALESCE(c.STATUS, 'new') != 'Dormant'
+          AND c.SECCODEID = 'F6UJ9A000002'
+        GROUP BY upc.user_main_id
+      ids:
+        - select: "user_main_id"
+          type: main_id
+          entity: user
+
+
+  # FIXED ─ Total purchases for every user
+  - name: customer_total_purchases
+    model_type: sql_template
+    model_spec:
+      materialization: {output_type: table}
+      single_sql: |
+        , user_customer_mapping AS (
+            SELECT
+                user_main_id,
+                other_id AS contactid
+            FROM {{ this.DeRef("models/user_id_stitcher") }}
+            WHERE
+                other_id_type = 'contact_id'
+        ),
+        contact_totals AS (
+            SELECT
+                ucm.user_main_id,
+                ucm.contactid,
+                c.SECCODEID,
+                MAX(a.PURCHASE_VISIT_SEQ) as last_pur_visit_seq
+            FROM user_customer_mapping ucm
+            JOIN sysdba.contact c ON ucm.contactid = c.contactid
+            LEFT JOIN customer.axr_base a ON c.contactid = a.CONTACT_ID
+            WHERE COALESCE(c.TYPE, '01') IN ('01', '91', '93') AND COALESCE(c.STATUS, 'new') != 'Dormant'
+                AND c.SECCODEID IN ('F6UJ9A000002', 'F6UJ9A000004')  -- Include both mainline and outlet
+            GROUP BY ucm.user_main_id, ucm.contactid, c.SECCODEID
+        )
+        SELECT 
+            ct.user_main_id,
+            SUM(CASE WHEN ct.SECCODEID = 'F6UJ9A000002' THEN ct.last_pur_visit_seq ELSE 0 END) as mainline_total_purchases,
+            SUM(CASE WHEN ct.SECCODEID = 'F6UJ9A000004' THEN ct.last_pur_visit_seq ELSE 0 END) as outlet_total_purchases,
+            SUM(ct.last_pur_visit_seq) as total_purchases
+        FROM contact_totals ct
+        GROUP BY ct.user_main_id
+      ids:
+        - select: "user_main_id"
+          type: main_id
+          entity: user
+
+  - name: rfm_score_model
+    model_type: sql_template
+    model_spec:
+      materialization:
+        output_type: table
+      single_sql: |
+        , user_primary_contact AS (
+          SELECT 
+            cwr.user_main_id,
+            cwr.primary_customerid,
+            cr.contactid as primary_contactid
+          FROM {{ this.DeRef("models/contact_with_retail") }} cwr
+          JOIN sysdba.contact_retail cr 
+            ON cwr.primary_customerid = cr.customerid
+          WHERE cwr.primary_customerid IS NOT NULL
+        ),
+        base AS (
+          SELECT 
+            a.user_main_id,                    
+            a.customer_unq,                   
+            DATEDIFF(day, a.last_visit_date, CURRENT_DATE()) as recency,
+            COUNT(DISTINCT CASE WHEN a.ACTIVITY IN ('Purchase', 'Recovery') THEN a.visit_id END) as frequency,
+            SUM(itm_value) as monetary
+          FROM (
+            SELECT 
+              upc.user_main_id,
+              upc.primary_contactid as customer_unq,   
+              b.CONTACT_ID AS contact_id,
+              b.VISIT_ID AS visit_id,
+              b.VISIT_ACTUAL_DATE,
+              b.ACTIVITY,
+              MAX(b.VISIT_ACTUAL_DATE) OVER (PARTITION BY b.CONTACT_ID) AS last_visit_date,
+              b.RELATIVE_VALUE AS itm_value,
+              c.LASTNAME,
+              c.FIRSTNAME
+            FROM user_primary_contact upc
+            JOIN sysdba.contact c ON upc.primary_contactid = c.contactid
+            INNER JOIN customer.axr_base b ON c.contactid = b.CONTACT_ID
+            WHERE 
+              COALESCE(c.TYPE, '01') IN ('01', '91', '93')
+              AND COALESCE(c.STATUS, 'new') != 'Dormant'
+              AND c.seccodeid = 'F6UJ9A000002'
+              AND UPPER(c.lastname) NOT LIKE '%GUEST%'
+              AND b.visit_actual_date >= add_months(current_date(), -60)
+          ) a
+          GROUP BY
+            a.user_main_id, 
+            a.customer_unq,
+            DATEDIFF(day, a.last_visit_date, CURRENT_DATE())
+        ),
+        rfm AS (
+          SELECT 
+            user_main_id,
+            customer_unq,
+            recency,
+            frequency,
+            monetary,
+            NTILE(6) OVER (ORDER BY recency DESC) as R,
+            NTILE(6) OVER (ORDER BY frequency ASC) as F,
+            NTILE(6) OVER (ORDER BY monetary ASC) as M
+          FROM base
+          WHERE frequency > 0 OR monetary > 0  -- Only include customers with activity
+        ),
+        rfm_scored AS (
+          SELECT
+            user_main_id,
+            customer_unq,
+            recency,
+            frequency,
+            monetary,
+            R,
+            F,
+            M,
+            CONCAT_WS('-', R, F, M) as rfm_cell,
+            CAST((CAST(R as FLOAT) + F + M) / 3 as DECIMAL(16,1)) as avg_rfm_scores
+          FROM rfm
+        ),
+        rfm_final AS (
+          SELECT
+            user_main_id,
+            customer_unq,
+            recency,
+            frequency,
+            monetary,
+            R,
+            F,
+            M,
+            rfm_cell,
+            avg_rfm_scores,
+            CASE
+            WHEN avg_rfm_scores >= 1 AND avg_rfm_scores < 2 THEN '1'
+                WHEN avg_rfm_scores >= 2 AND avg_rfm_scores < 3 THEN '2'  
+              WHEN avg_rfm_scores >= 3 AND avg_rfm_scores < 4 THEN '3'  
+              WHEN avg_rfm_scores >= 4 AND avg_rfm_scores < 5 THEN '4'    
+              WHEN avg_rfm_scores >= 5 AND avg_rfm_scores < 6 THEN '5'  
+              WHEN avg_rfm_scores = 6 THEN '6'  
+              ELSE '0'
+            END as rfm_score
+          FROM rfm_scored
+        ),
+        -- Handle users without primary_customerid or RFM data
+        all_users AS (
+          SELECT DISTINCT user_main_id
+          FROM {{ this.DeRef("models/user_id_stitcher") }}
+        )
+        SELECT 
+          au.user_main_id,
+          COALESCE(rf.rfm_score, '0') as rfm_score,
+          COALESCE(rf.recency, 0) as recency,
+          COALESCE(rf.frequency, 0) as frequency,
+          COALESCE(rf.monetary, 0) as monetary,
+          COALESCE(rf.R, 0) as R_score,
+          COALESCE(rf.F, 0) as F_score,
+          COALESCE(rf.M, 0) as M_score,
+          rf.rfm_cell
+        FROM all_users au
+        LEFT JOIN rfm_final rf ON au.user_main_id = rf.user_main_id
+      ids:
+        - select: "user_main_id"
+          type: main_id
+          entity: user
+
+
+  # NEW: Sale spend score model - measures percentage of spending on sale items (prices ending in 9)
+  - name: sale_spend_score_model
+    model_type: sql_template
+    model_spec:
+      materialization:
+        output_type: table
+      single_sql: |
+        , user_primary_contact AS (
+          SELECT 
+            cwr.user_main_id,
+            cwr.primary_customerid,
+            cr.contactid as primary_contactid
+          FROM {{ this.DeRef("models/contact_with_retail") }} cwr
+          JOIN sysdba.contact_retail cr 
+            ON cwr.primary_customerid = cr.customerid
+          WHERE cwr.primary_customerid IS NOT NULL
+        ),
+        sale_spend_calculation AS (
+          SELECT 
+            upc.user_main_id,
+            upc.primary_customerid,
+            CASE 
+              WHEN SUM(CASE WHEN MOD(ti.sellingprice, 10) = 9 THEN ti.QTY * ti.SELLINGPRICE / 100 ELSE 0 END) > 0
+              THEN SUM(CASE WHEN MOD(ti.sellingprice, 10) = 9 THEN ti.QTY * ti.SELLINGPRICE / 100 ELSE 0 END) / SUM(ti.qty * ti.sellingprice / 100)
+              ELSE 0 
+            END as sale_spend_score,
+            SUM(ti.qty * ti.sellingprice / 100) as total_spend_amount,
+            SUM(CASE WHEN MOD(ti.sellingprice, 10) = 9 THEN ti.QTY * ti.SELLINGPRICE / 100 ELSE 0 END) as sale_spend_amount,
+            COUNT(DISTINCT tr.pktransactionid) as transaction_count
+          FROM user_primary_contact upc
+          JOIN sysdba.contact c ON upc.primary_contactid = c.contactid
+          JOIN sysdba.contact_retail cr ON cr.contactid = c.contactid
+          JOIN sysdba.salesentity se ON se.contactid = c.contactid
+          JOIN vstore.customer cu ON cu.identificationno = se.customerid
+          JOIN vstore.transaction tr ON tr.fkcustomerno = cu.pkcustomerno 
+            AND tr.isvoided = 'f' 
+            AND tr.fktrantype = 10
+          JOIN vstore.tranitem ti ON ti.fktransactionid = tr.pktransactionid 
+            AND ti.isvoided = 'f'
+          JOIN vstore.terminal t ON tr.fkterminalid = t.pkterminalid
+          WHERE NVL(c.TYPE, '01') IN ('01', '91', '93')
+            AND c.seccodeid IN ('F6UJ9A000002')
+            AND NVL(c.STATUS, 'new') != 'Dormant'
+            AND tr.BUSINESSDATE >= ADD_MONTHS(CURRENT_DATE(), -36)
+            AND ti.QTY > 0
+            AND cr.CUSTOMERID IS NOT NULL
+          GROUP BY upc.user_main_id, upc.primary_customerid
+        ),
+        all_users AS (
+          -- Get all users to ensure we have entries for users without primary customers
+          SELECT DISTINCT user_main_id
+          FROM {{ this.DeRef("models/user_id_stitcher") }}
+        )
+        SELECT 
+          au.user_main_id,
+          COALESCE(ssc.sale_spend_score, 0) as sale_spend_score,
+          COALESCE(ssc.total_spend_amount, 0) as total_spend_amount_36m,
+          COALESCE(ssc.sale_spend_amount, 0) as sale_spend_amount_36m,
+          COALESCE(ssc.transaction_count, 0) as transaction_count_36m
+        FROM all_users au
+        LEFT JOIN sale_spend_calculation ssc ON au.user_main_id = ssc.user_main_id
+      ids:
+        - select: "user_main_id"
+          type: main_id
+          entity: user
+
+  - name: hr_customer_axr_status
+    model_type: sql_template
+    model_spec:
+      materialization:
+        output_type: table
+      single_sql: |
+        , user_mainline_contact AS (
+          SELECT 
+            cwr.user_main_id,
+            cwr.mainline_customerid,
+            cr.contactid as mainline_contactid
+          FROM {{ this.DeRef("models/contact_with_retail") }} cwr
+          JOIN sysdba.contact_retail cr 
+            ON cwr.mainline_customerid = cr.customerid
+          WHERE cwr.mainline_customerid IS NOT NULL
+        ),
+        axr_transaction_counts AS (
+          SELECT
+            umc.user_main_id,
+            MAX(a.PURCHASE_VISIT_SEQ) as total_mainline_seq,         
+            COUNT(CASE WHEN a.TXN_STORECD = '997' THEN 1 END) as finalcut_transaction_count 
+          FROM user_mainline_contact umc
+          JOIN sysdba.contact c ON umc.mainline_contactid = c.contactid
+          LEFT JOIN customer.axr_base a ON c.contactid = a.CONTACT_ID
+          WHERE COALESCE(c.TYPE, '01') IN ('01', '91', '93')
+            AND COALESCE(c.STATUS, 'new') != 'Dormant'
+            AND c.SECCODEID = 'F6UJ9A000002'
+          GROUP BY umc.user_main_id
+        )
+        SELECT
+          user_main_id,
+          GREATEST(COALESCE(total_mainline_seq, 0) - COALESCE(finalcut_transaction_count, 0), 0) as hr_last_pur_visit_seq, 
+          COALESCE(finalcut_transaction_count, 0) as fc_last_pur_visit_seq                              
+        FROM axr_transaction_counts
+      ids:
+        - select: "user_main_id"
+          type: main_id
+          entity: user
+
+  - name: ol_customer_axr_status
+    model_type: sql_template
+    model_spec:
+      materialization:
+        output_type: table
+      single_sql: |
+        , user_outlet_contact AS (
+          SELECT 
+            cwr.user_main_id,
+            cwr.outlet_customerid,
+            cr.contactid as outlet_contactid
+          FROM {{ this.DeRef("models/contact_with_retail") }} cwr
+          JOIN sysdba.contact_retail cr 
+            ON cwr.outlet_customerid = cr.customerid
+          WHERE cwr.outlet_customerid IS NOT NULL
+        )
+        SELECT 
+          uoc.user_main_id,
+          COALESCE(MAX(a.PURCHASE_VISIT_SEQ), 0) as ol_last_pur_visit_seq
+        FROM user_outlet_contact uoc
+        JOIN sysdba.contact c ON uoc.outlet_contactid = c.contactid
+        LEFT JOIN customer.axr_base a ON c.contactid = a.CONTACT_ID
+        WHERE COALESCE(c.TYPE, '01') IN ('01', '91', '93')
+          AND COALESCE(c.STATUS, 'new') != 'Dormant'
+          AND c.SECCODEID = 'F6UJ9A000004'
+        GROUP BY uoc.user_main_id
+      ids:
+        - select: "user_main_id"
+          type: main_id
+          entity: user

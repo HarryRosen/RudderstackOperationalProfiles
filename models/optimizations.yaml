@@ -1,0 +1,7 @@
+# For more info about available optimizations visit docs link: https://www.rudderstack.com/docs/profiles/dev-docs/optimizations/
+# toggle the values to try out the optimizations and verify if they work for your use case.
+optimizations:
+  main_id_addition_approach: case_based_join
+  enable_input_columns_filtering: false # enable to get rid of select * queries when we read input tables
+  bundle_entity_vars: false             # enable to group the execution of entity vars
+  bundle_input_vars: false              # enable to group the execution of input vars

@@ -11,9 +11,9 @@ inputs:
         - select: "user_id"
           type: user_id
           entity: user
-        - select: "anonymous_id"
-          type: anonymous_id
-          entity: user
+#        - select: "anonymous_id"
+#          type: anonymous_id
+#          entity: user
         - select: "lower(context_traits_email)"
           type: email
           entity: user
@@ -26,9 +26,9 @@ inputs:
         - select: "user_id"
           type: user_id
           entity: user
-        - select: "anonymous_id"
-          type: anonymous_id
-          entity: user
+#        - select: "anonymous_id"
+#          type: anonymous_id
+#          entity: user
 
   # Contact table - primary stitching source for email
   - name: contact
@@ -43,22 +43,35 @@ inputs:
           entity: user
 
   # Name phone matches - primary stitching source for name_phone_key
-  - name: name_phone_matches
+  #- name: name_phone_matches
+  #  app_defaults:
+  #    view: rudderstackprofiles.name_phone_matches
+  #    ids:
+  #      - select: "name_phone_key"
+  #        type: name_phone_key
+  #        entity: user
+  #      - select: "contactid"
+  #        type: contact_id
+  #        entity: user
+  #      - select: "email"
+  #        type: email
+  #        entity: user
+  #      - select: "customerid"
+  #        type: user_id
+  #        entity: user
+
+  # pkcustomerno
+  - name: vstore_customer
     app_defaults:
-      view: rudderstackprofiles.name_phone_matches
+      table: vstore.customer
       ids:
-        - select: "name_phone_key"
-          type: name_phone_key
-          entity: user
-        - select: "contactid"
-          type: contact_id
-          entity: user
-        - select: "email"
-          type: email
-          entity: user
-        - select: "customerid"
+        - select: "pkcustomerno"
           type: user_id
           entity: user
+        - select: "identificationno"
+          type: user_id
+          entity: user  
+
 
   # Contact retail 
   - name: contact_retail
@@ -90,9 +103,9 @@ inputs:
         - select: "user_id"
           type: user_id
           entity: user
-        - select: "anonymous_id"
-          type: anonymous_id
-          entity: user
+#        - select: "anonymous_id"
+#          type: anonymous_id
+#          entity: user
 
   - name: rsProductAddedToWishlist
     app_defaults:
@@ -102,6 +115,6 @@ inputs:
         - select: "user_id"
           type: user_id
           entity: user
-        - select: "anonymous_id"
-          type: anonymous_id
-          entity: user
+#        - select: "anonymous_id"
+#          type: anonymous_id
+#          entity: user

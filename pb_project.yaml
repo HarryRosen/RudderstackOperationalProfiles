@@ -1,14 +1,14 @@
 # pb_project.yaml
-# Corrected configuration for RudderStack Profiles
+# Corrected configuration for RudderStack Operational Profiles
 
 # Project name
-name: rudderstackprofiles-dev
+name: rudderstackoperationalprofiles-dev
 
 # Schema version
-schema_version: 89
+schema_version: 93
 
 # Database connection
-connection: rudderstackprofiles-dev
+connection: Rudderstack-dev
 
 
 # Model folders
@@ -21,38 +21,38 @@ entities:
     id_stitcher: models/user_id_stitcher
     id_types:
       - user_id
-      - anonymous_id
+     # - anonymous_id
       - email
-      - name_phone_key
+     # - name_phone_key
       - contact_id
 
 # ID type definitions with filtering
 id_types:
   - name: user_id
-  - name: anonymous_id
-    filters:
-      - type: exclude
-        value: ""
-      - type: exclude
-        value: "unknown"
-      - type: exclude
-        value: "NaN"
-      - type: exclude
-        value: "null"
+  #- name: anonymous_id
+  #  filters:
+  #    - type: exclude
+  #      value: ""
+  #    - type: exclude
+  #      value: "unknown"
+  #    - type: exclude
+  #      value: "NaN"
+  #    - type: exclude
+  #      value: "null"
   - name: email
     filters:
       - type: include
         regex: ".+@.+"
       - type: exclude
         value: "test@company.com"
-  - name: name_phone_key
-    filters:
-      - type: exclude
-        value: ""
-      - type: exclude
-        value: "unknown"
-      - type: exclude
-        value: "null"
+  #- name: name_phone_key
+   # filters:
+    #  - type: exclude
+     #   value: ""
+      #- type: exclude
+       # value: "unknown"
+     # - type: exclude
+      #  value: "null"
   - name: contact_id
     filters:
       - type: exclude
@@ -65,4 +65,4 @@ id_types:
 
 # Python requirements
 python_requirements:
-  - profiles-rudderstack==0.22.*
+  - profiles-rudderstack==0.24.*

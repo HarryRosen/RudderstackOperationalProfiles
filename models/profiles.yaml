@@ -1,0 +1,188 @@
+# profiles.yaml
+# Updated configuration with deterministic feature selection using primary_customerid
+# UPDATED: Added address fields from sysdba.address table
+
+models:
+  - name: user_id_stitcher
+    model_type: id_stitcher
+    model_spec:
+      entity_key: user
+      edge_sources:
+        - from: inputs/rsIdentifies
+        - from: inputs/rsTracks
+        - from: inputs/rsProductViewed        
+        - from: inputs/rsProductAddedToWishlist  
+        - from: inputs/contact
+#        - from: inputs/name_phone_matches
+        - from: inputs/contact_retail
+        - from: inputs/vstore_customer 
+
+var_groups:
+  - name: user_features
+    entity_key: user
+    vars:
+      # FIXED: Contact information features - now using primary contact only
+      
+      - entity_var:
+          name: account_creation_date
+          select: any_value(createdate)
+          from: models/contact_primary_filtered
+          where: createdate IS NOT NULL
+          description: Date the primary contact record was first created
+
+      - entity_var:
+          name: mobile_phone
+          select: any_value(mobile)
+          from: models/contact_primary_filtered
+          where: mobile is not null and mobile != ''
+          description: Mobile Phone Number from primary customer
+
+      - entity_var:
+          name: homephone
+          select: any_value(homephone)
+          from: models/contact_primary_filtered
+          where: homephone is not null and homephone != ''
+          description: Home phone number from primary customer
+
+      - entity_var:
+          name: prefix
+          select: any_value(prefix)
+          from: models/contact_primary_filtered
+          where: prefix is not null and prefix != ''
+          description: Prefix from primary customer
+
+      - entity_var:
+          name: firstname
+          select: any_value(firstname)
+          from: models/contact_primary_filtered
+          where: firstname is not null and firstname != ''
+          description: First name from primary customer
+
+      - entity_var:
+          name: lastname
+          select: any_value(lastname)
+          from: models/contact_primary_filtered
+          where: lastname is not null and lastname != ''
+          description: Last name from primary customer
+
+      # FIXED: Contact retail profile features - now using primary contact only
+      - entity_var:
+          name: loginradius_id
+          select: any_value(identityid)
+          from: models/contact_retail_primary_filtered
+          where: identityid is not null
+          description: Login Radius ID from primary customer
+      
+      - entity_var:
+          name: language_preference
+          select: any_value(languagepref)
+          from: models/language_preference_filled
+          where: languagepref is not null and languagepref != ''
+          description: Profile language (contact-retail value when present, else "en" default)
+      
+      # FIXED: Transaction aggregation features - now deterministic from primary
+      
+      - entity_var:
+          name: last_transaction_date
+          select: any_value(last_transaction_date)
+          from: models/contact_retail_primary_filtered
+          where: last_transaction_date is not null
+          description: Last transaction date from primary customer
+
+      # NEW: Address features from primary customer
+      - entity_var:
+          name: address
+          select: any_value(address)
+          from: models/address_primary_filtered
+          where: address is not null and address != ''
+          description: Primary address from customer's primary address record
+
+      - entity_var:
+          name: city
+          select: any_value(city)
+          from: models/address_primary_filtered
+          where: city is not null and city != ''
+          description: City from customer's primary address record
+
+      - entity_var:
+          name: province
+          select: any_value(province)
+          from: models/address_primary_filtered
+          where: province is not null and province != ''
+          description: Province/State from customer's primary address record
+
+      - entity_var:
+          name: postalcode
+          select: any_value(postalcode)
+          from: models/address_primary_filtered
+          where: postalcode is not null and postalcode != ''
+          description: Postal code from customer's primary address record
+
+      - entity_var:
+          name: country
+          select: any_value(country)
+          from: models/address_primary_filtered
+          where: country is not null and country != ''
+          description: Country from customer's primary address record
+      
+      # Contact aggregation features (these can remain as-is for counts)
+      - entity_var:
+          name: contact_count
+          select: count(distinct contactid)
+          from: inputs/contact
+          description: Number of contact records stitched to this profile
+      
+      - entity_var:
+          name: customer_ids_list
+          select: array_agg(distinct customerid)
+          from: inputs/contact_retail
+          where: customerid is not null
+          description: List of customer IDs associated with profile
+      
+      - entity_var:
+          name: contact_ids_list
+          select: array_agg(distinct contactid)
+          from: inputs/contact
+          description: List of contact IDs stitched to this profile
+
+      - entity_var:
+          name: pkcustomerno
+          select: array_agg(distinct pkcustomerno)
+          from: inputs/vstore_customer
+          description: List of pkcustomerno stitched to this profile
+
+      - entity_var:
+          name: identificationno
+          select: array_agg(distinct identificationno)
+          from: inputs/vstore_customer
+          where: identificationno is not null
+          description: List of identificationno stitched to this profile    
+      
+      # Name phone match features
+      #- entity_var:
+      #    name: name_phone_keys
+      #    select: array_agg(distinct name_phone_key)
+      #    from: inputs/name_phone_matches
+      #    where: name_phone_key is not null
+      #    description: List of name phone keys associated with profile
+
+      # Primary customer identification features
+      - entity_var:
+          name: mainline_customerid
+          select: any_value(mainline_customerid)
+          from: models/contact_with_retail
+          where: mainline_customerid is not null
+          description: Mainline customer ID
+
+      - entity_var:
+          name: outlet_customerid
+          select: any_value(outlet_customerid)
+          from: models/contact_with_retail
+          where: outlet_customerid is not null
+          description: Outlet customer ID
+
+      - entity_var:
+          name: primary_customerid
+          select: any_value(primary_customerid)
+          from: models/contact_with_retail
+          description: Primary customer ID (most transacted)

@@ -42,6 +42,22 @@ inputs:
           type: contact_id
           entity: user
 
+  # Legacy Infor CRM merges - reconnects contacts that were merged inside the CRM.
+  # The secondary contact (seccode ...17) had its email severed at merge time, so the
+  # only thing linking it back to its surviving primary is this table. Both columns are
+  # contactids, so each row becomes a contact_id <-> contact_id stitching edge. The
+  # secondary's customerid/pkcustomerno then fold in via contact_retail + vstore_customer.
+  - name: merge_request
+    app_defaults:
+      table: sysdba.merge_request
+      ids:
+        - select: "primary_id"
+          type: contact_id
+          entity: user
+        - select: "secondary_id"
+          type: contact_id
+          entity: user
+
   # Name phone matches - primary stitching source for name_phone_key
   #- name: name_phone_matches
   #  app_defaults:

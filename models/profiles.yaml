@@ -15,7 +15,8 @@ models:
         - from: inputs/contact
 #        - from: inputs/name_phone_matches
         - from: inputs/contact_retail
-        - from: inputs/vstore_customer 
+        - from: inputs/vstore_customer
+        - from: inputs/merge_request   # legacy CRM merges: primary_id <-> secondary_id
 
 var_groups:
   - name: user_features

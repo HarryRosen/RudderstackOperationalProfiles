@@ -19,7 +19,8 @@ models:
             c.contactid,
             c.seccodeid,
             c.createdate,
-            cr.customerid
+            cr.customerid,
+            cr.last_transaction_date
           FROM user_customer_mapping ucm
           JOIN sysdba.contact_retail cr ON ucm.customerid = cr.customerid
           JOIN sysdba.contact c ON cr.contactid = c.contactid
@@ -33,13 +34,13 @@ models:
             seccodeid,
             createdate,
             customerid,
-            
+            last_transaction_date,
             -- Window function for mainline_customerid (seccode ending in 02)
             CASE 
               WHEN seccodeid = 'F6UJ9A000002' THEN
                 first_value(customerid) OVER (
                   PARTITION BY user_main_id, seccodeid
-                  
+                  ORDER BY last_transaction_date DESC NULLS LAST, createdate ASC NULLS LAST, customerid ASC
                   ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
                 )
             END as mainline_customerid,
@@ -48,7 +49,7 @@ models:
               WHEN seccodeid = 'F6UJ9A000004' THEN
                 first_value(customerid) OVER (
                   PARTITION BY user_main_id, seccodeid
-                  
+                  ORDER BY last_transaction_date DESC NULLS LAST, createdate ASC NULLS LAST, customerid ASC
                   ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
                 )
             END as outlet_customerid

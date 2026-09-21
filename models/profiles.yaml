@@ -186,4 +186,4 @@ var_groups:
           name: primary_customerid
           select: any_value(primary_customerid)
           from: models/contact_with_retail
-          description: Primary customer ID (most transacted)
+          description: Primary customer ID (most recently transacted mainline, else outlet)

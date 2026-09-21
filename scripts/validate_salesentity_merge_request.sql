@@ -145,6 +145,16 @@ WHERE array_size(customer_ids_list) >= 1
 -- 6. AFTER pb run: cluster-size regression check. Compare against the same query taken
 --    before the change. If the largest cluster grows by more than a few ids, an edge is
 --    chaining and the guards need tightening.
+--
+--    BASELINE, seq 25, immediately after run A (run A adds no edges, so this is equally
+--    the pre-run-B baseline). Top 10 by id count:
+--      703, 373, 153, 145, 142, 137, 123, 118, 118, 110
+--    The 123 and 110 are the MONETTI and MYDLAND profiles from dry-run section A4, where
+--    they showed 59 and 54 mainline customerids with a matching contactid each. They are
+--    single people with badly duplicated source records, not over-stitched profiles.
+--    The 703 and 373 never appeared in A4 because A4 only counts 02/04 customerids;
+--    those two are dominated by other id types. Dry-run B3 put the largest post-fusion
+--    group at 93 ids total, so run B should not move the head of this list at all.
 SELECT user_main_id, count(*) AS ids
 FROM datalayer_prod.rudderstackoperationalprofiles.user_id_stitcher
 GROUP BY 1

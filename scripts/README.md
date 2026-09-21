@@ -144,6 +144,67 @@ Then run sections 1 to 4 of `validate_salesentity_merge_request.sql`, run `pb ru
 run sections 5 and 6. The validation script is written against `datalayer_prod`; change
 the catalog when checking test.
 
+### If pb fails on "creating latest frontier views"
+
+Symptom, seen on seq 24 (2026-09-21):
+
+```
+ERROR calling run api: creating Latest View of model 'address_primary_filtered':
+PERMISSION_DENIED: User does not have MANAGE on Table
+'datalayer_prod.rudderstackoperationalprofiles.address_primary_filtered'.
+sql: DROP VIEW IF EXISTS `rudderstackoperationalprofiles`.`address_primary_filtered`;
+```
+
+This is not a data failure. It lands after all materials are built, so the run's output
+is complete and correct in its `material_<model>_<hash>_<seq>` tables. What fails is the
+last step, where `pb` repoints the unhashed alias views at the new seq.
+
+Two consequences:
+
+1. The failure aborts the whole frontier pass, so **no** alias is repointed, not just the
+   one named. `user_feature_view` keeps serving the previous seq. Any validation query
+   that reads an alias silently reports the old run. Check with
+   `SHOW CREATE TABLE <catalog>.rudderstackoperationalprofiles.user_feature_view` and
+   read the seq off the `material_..._<seq>` it selects from.
+2. Validation can proceed anyway by reading the new `material_user_feature_view_<hash>_<seq>`
+   table directly in place of the alias. The snapshot in section 0 is unaffected.
+
+Cause is Unity Catalog ownership: an alias view owned by anyone other than the principal
+`pb` connects as cannot be dropped by `pb`. Note UC words the error as MANAGE on "Table"
+even when the object is a view.
+
+On seq 24 the trigger was a backup of the schema taken earlier the same day. It recreated
+the objects in place, which transferred ownership of every view, every pre-seq-24
+`material_*` table, `ptr_to_latest_seqno_cache` and `salesentity_merge_request` to the
+individual who ran it. **Back the schema up with `DEEP CLONE` into a separate schema
+instead**; recreating in place breaks the next `pb` run every time, and because the
+failure lands after all the data is built it looks far worse than it is.
+
+Check the whole schema, not just the view the error names. Three of those objects break
+different things: the alias views break the frontier step, `ptr_to_latest_seqno_cache` is
+`pb`'s own bookkeeping, and `salesentity_merge_request` is what run B reads - that one
+surfaces as a permission error at read time, not a data error. Stale `material_*` tables
+from earlier seq numbers break retention cleanup later.
+
+Find `pb`'s principal from the tables it just created successfully, then hand the views
+back:
+
+```sql
+SELECT table_name, table_owner
+FROM <catalog>.information_schema.tables
+WHERE table_schema = 'rudderstackoperationalprofiles'
+  AND table_name LIKE 'material_%_<seq>' LIMIT 5;
+
+ALTER VIEW <catalog>.rudderstackoperationalprofiles.<view> OWNER TO `<pb principal>`;
+```
+
+Transfer ownership rather than dropping the views. `pb` would recreate and own them on the
+next run, but the aliases are read by live consumers (core_stage, the Braze and Algolia
+syncs) and dropping them breaks those for the duration of the run. `ALTER VIEW OWNER` is
+instant and has no downtime. Only the current owner or a metastore admin can run it.
+
+Then resume with `pb run --seq_no <seq>` rather than re-running from scratch.
+
 ### Rollback
 
 Delete the `- from: inputs/salesentity_merge_request` line from

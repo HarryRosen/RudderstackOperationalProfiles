@@ -17,6 +17,7 @@ models:
         - from: inputs/contact_retail
         - from: inputs/vstore_customer
         - from: inputs/merge_request   # legacy CRM merges: primary_id <-> secondary_id
+        - from: inputs/salesentity_merge_request   # pre-2001 CRM merges recovered from salesentity
 
 var_groups:
   - name: user_features

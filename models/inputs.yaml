@@ -58,6 +58,24 @@ inputs:
           type: contact_id
           entity: user
 
+  # Pre-2001 Infor CRM merges, recovered from sysdba.salesentity. Before merge_request
+  # existed, merging two contacts left the survivor holding the dead contact's customerid
+  # in salesentity while contact_retail still points that customerid at the dead contact.
+  # That disagreement is the only surviving record of the merge. Both columns are
+  # contactids, so each row becomes a contact_id <-> contact_id stitching edge.
+  # View definition: RudderstackDatabricksViews/views/salesentity_merge_request.sql
+  # Guards, deploy step and validation queries: scripts/README.md
+  - name: salesentity_merge_request
+    app_defaults:
+      view: rudderstackoperationalprofiles.salesentity_merge_request
+      ids:
+        - select: "primary_id"
+          type: contact_id
+          entity: user
+        - select: "secondary_id"
+          type: contact_id
+          entity: user
+
   # Name phone matches - primary stitching source for name_phone_key
   #- name: name_phone_matches
   #  app_defaults:

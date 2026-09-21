@@ -35,14 +35,25 @@ FROM datalayer_prod.rudderstackoperationalprofiles.user_feature_view;
 --     it should land near the net_profile_count_reduction that dry-run section B2
 --     predicted.
 --
---     Run A: expect gained = 0, lost = 0, merged_away = 0, new_profiles = 0, and
+--     Run A: expect gained = 0, lost = 0, merged_away and new_profiles small and organic,
 --            primary_changed near 2,826 (only partitions with more than one competing
 --            customerid can move at all).
---     Run B: expect gained near 10,394, lost = 0, merged_away near 11,109.
+--     Run B: expect lost = 0 and merged_away near 11,109.
 --
 --     lost_a_primary counts only profiles that still exist and came out with no primary.
 --     That must stay 0 in both runs - a profile that merged away did not lose a primary,
 --     it stopped existing, and is counted in merged_away instead.
+--
+--     DO NOT read gained_a_primary as the recovery count on run B. It can only see
+--     profiles whose user_main_id SURVIVES the merge. Most recoveries go the other way:
+--     the null-primary profile is absorbed into a cluster that already held a primary,
+--     its main_id disappears, and it lands in merged_away. On the real run B that split
+--     was 2,080 survivors against a true recovery of 10,418. Section 5 is the number
+--     that answers "how many profiles were recovered"; this column is a subset of it.
+--
+--     ACTUALS, run A (seq 25) then run B (seq 26), 2026-09-21:
+--       run A: merged_away 47, new 137, gained 0, lost 0, primary_changed 2,826
+--       run B: merged_away 11,125, new 267, gained 2,080, lost 0, primary_changed 266
 SELECT
   count(*)                                          AS rows_compared,
   count(CASE WHEN v.user_main_id IS NULL THEN 1 END) AS profiles_merged_away,
@@ -132,10 +143,14 @@ WHERE (ca.seccodeid IN ('F6UJ9A000002','F6UJ9A000004')
 --
 --    BASELINE, measured 2026-09-21 immediately before run A: 125,299.
 --    Most of that is correct by design - only the ~10,400 defect bucket is recoverable,
---    the rest is seccode 18 / SYST / 10 and stays null. So:
---      after run A: still 125,299. Run A adds no edges and cannot recover a profile.
---      after run B: roughly 114,880.
---    This number is not derivable from primary_customerid_snapshot, which does not carry
+--    the rest is seccode 18 / SYST / 10 and stays null.
+--
+--    ACTUALS: after run A, 125,299 unchanged, as expected - run A adds no edges and so
+--    cannot recover anything. After run B, 114,881, a drop of 10,418 against the 10,419
+--    that dry-run section B4 predicted.
+--
+--    This section, not 0b's gained_a_primary, is the recovery count. See the note on 0b.
+--    It is not derivable from primary_customerid_snapshot, which does not carry
 --    customer_ids_list, so it has to be captured before each run or not at all.
 SELECT count(*) AS null_primary_profiles
 FROM datalayer_prod.rudderstackoperationalprofiles.user_feature_view
@@ -155,6 +170,13 @@ WHERE array_size(customer_ids_list) >= 1
 --    The 703 and 373 never appeared in A4 because A4 only counts 02/04 customerids;
 --    those two are dominated by other id types. Dry-run B3 put the largest post-fusion
 --    group at 93 ids total, so run B should not move the head of this list at all.
+--
+--    ACTUALS after run B (seq 26). The head did not move:
+--      703, 373, 153, 145, 145, 137, 129, 118, 118, 110, 101, 95, 93, 87, 84, 82, ...
+--    Only three entries changed. rid03bc9729... enters at 93, which is the 31-cluster
+--    MACNEIL fusion landing at exactly the id count B3 predicted. MONETTI went 123 to 129
+--    and rid1b3b2e30... went 142 to 145, both single people absorbing fragments. No
+--    cluster chained, and the two largest profiles are untouched.
 SELECT user_main_id, count(*) AS ids
 FROM datalayer_prod.rudderstackoperationalprofiles.user_id_stitcher
 GROUP BY 1

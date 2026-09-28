@@ -76,6 +76,28 @@ inputs:
           type: contact_id
           entity: user
 
+  # The missing customerid -> contactid bridge, recovered from sysdba.salesentity.
+  # The model bridges customerid to contactid only through contact_retail, and about
+  # 42,960 customerids have no contact_retail row at all - they exist only in
+  # salesentity. Their POS profiles (vstore.customer, stitched by identificationno) are
+  # therefore stranded on an identity with no customerid and so no primary_customerid.
+  # customerid is a user_id and contactid a contact_id, so each row is the bridge edge
+  # contact_retail cannot supply. Distinct from salesentity_merge_request, which handles
+  # customerids present in BOTH tables pointing at different contacts.
+  # View definition: RudderstackDatabricksViews/views/salesentity_bridge.sql
+  # Diagnosis: scripts/diagnose_pos_null_primary.sql
+  # Guards and pre-flight checks: scripts/dryrun_salesentity_bridge.sql
+  - name: salesentity_bridge
+    app_defaults:
+      view: rudderstackoperationalprofiles.salesentity_bridge
+      ids:
+        - select: "customerid"
+          type: user_id
+          entity: user
+        - select: "contactid"
+          type: contact_id
+          entity: user
+
   # Name phone matches - primary stitching source for name_phone_key
   #- name: name_phone_matches
   #  app_defaults:

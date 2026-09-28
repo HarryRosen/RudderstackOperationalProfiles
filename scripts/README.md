@@ -9,7 +9,9 @@ reads as inputs.
 | File | Purpose |
 |---|---|
 | `diagnose_null_primary_customerid.sql` | Splits the null-`primary_customerid` population into buckets, with the 2026-09-02 baseline recorded inline |
-| `dryrun_spot_checks.sql` | Blast-radius checks for both runs, all runnable before either one |
+| `diagnose_pos_null_primary.sql` | Triage for the 148,442 POS profiles reported with no primary, with the 2026-09-23 findings recorded inline |
+| `dryrun_spot_checks.sql` | Blast-radius checks for both `salesentity_merge_request` runs, all runnable before either one |
+| `dryrun_salesentity_bridge.sql` | The same checks for `salesentity_bridge` |
 | `validate_salesentity_merge_request.sql` | Pre- and post-`pb run` checks for the salesentity edge set |
 
 ## salesentity_merge_request
@@ -143,6 +145,76 @@ Deploy and validate in `datalayer_test` first, then repeat against `datalayer_pr
 Then run sections 1 to 4 of `validate_salesentity_merge_request.sql`, run `pb run`, then
 run sections 5 and 6. The validation script is written against `datalayer_prod`; change
 the catalog when checking test.
+
+## salesentity_bridge
+
+A second view, addressing a different manifestation of the same disagreement.
+
+`salesentity_merge_request` handles a customerid present in **both** `contact_retail` and
+`salesentity` but pointing at **different** contacts, and emits `contact_id` pairs.
+`salesentity_bridge` handles a customerid present in `salesentity` **only**, and emits the
+`user_id` to `contact_id` bridge that `contact_retail` cannot supply.
+
+Measured 2026-09-23 against 59,839 POS profiles stranded with no `primary_customerid`:
+
+| Cause | Profiles | Fix |
+|---|---|---|
+| `identificationno` missing on `vstore.customer` | 16,713 | source, not recoverable here |
+| matches `contact_retail` but did not stitch | 0 | no defect exists |
+| **customerid exists only in `salesentity`** | **42,960** | this view |
+| `identificationno` matches nothing | 166 | source |
+
+Formatting was ruled out: 43,126 profiles carry an `identificationno`, none match
+`contact_retail` as-is and none match after stripping leading zeros. The values are clean.
+
+Guards are in the view header. Two differences from the merge view worth knowing.
+
+The forward degree cap is **1 to 6** rather than 2 to 6 - a bridge wants one contact per
+customerid as its ideal case, whereas a pair-emitting view needs at least two.
+
+The reverse direction is **uncapped**. A cap of 30 was built and priced before being
+dropped; the reasoning is below so it is not relitigated.
+
+The first dry run returned `worst_case_fusion` of 414 against the merge view's 31, from
+one contactid bridging 444 customerids and another 299. Section C8 showed those contacts
+carrying null names, doubled names (`MM/MM`, `A/A`), initials or numerics, which read as
+placeholders at first glance. Section C9 established that they are mostly not:
+
+| pattern | contacts | avg fan-in | max | median createdate |
+|---|---|---|---|---|
+| has email | 32,761 | 1.15 | 40 | 2010 |
+| named, no email | 16,812 | 1.10 | 444 | 2005 |
+| blank or dash name | 1,096 | 1.38 | 299 | 2004 |
+| initials | 477 | 1.19 | 27 | 2007 |
+| doubled name | 70 | 4.23 | 66 | 2005 |
+| numeric name | 3 | 2.00 | 4 | 2003 |
+
+Blanked and dashed names cover 1,096 contacts at an ordinary fan-in, skewed six years
+older than contacts carrying an email. That is a house style for a customer who gave no
+details, not a placeholder, and a name-based rule would have discarded roughly 2,000
+legitimate bridges.
+
+Section C10 then found no positive evidence of any high fan-in contact merging unrelated
+people - each resolves to a single surname on the POS side, including all 444 of the
+largest. A cap of 30 would have cost 968 customerids across six contacts, about 1.6%, and
+with no evidence of incorrect merging that buys only precaution. So it was dropped and the
+full edge set retained.
+
+Two caveats carried forward:
+
+- The C10 corroboration may be **circular**. If `vstore.customer`'s name was copied from
+  the CRM contact when the POS record was created, one surname per contact is guaranteed
+  by construction. It is absence of contradictory evidence, not proof.
+- `C6UJ9A00FKPV` (the 444, COLIN MACNEIL) was created 2017-02-03, the same day and with an
+  adjacent contactid to `C6UJ9A00FKPR`, named `ORPHANED TRANSACTIONS`. That pair may be a
+  migration batch collecting unattributable transactions. **First place to look if a
+  post-run profile turns out to be wrongly fused.**
+
+Doubled names are the one pattern that does behave like a placeholder, at 4.23 average
+fan-in against ~1.2 everywhere else, but at 70 contacts it is not worth its own rule.
+
+Deploy, permissions and ownership are identical to `salesentity_merge_request`, with
+`VIEW_DEFINITION_FILE=./views/salesentity_bridge.sql`.
 
 ### If pb fails on "creating latest frontier views"
 

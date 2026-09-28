@@ -18,6 +18,7 @@ models:
         - from: inputs/vstore_customer
         - from: inputs/merge_request   # legacy CRM merges: primary_id <-> secondary_id
         - from: inputs/salesentity_merge_request   # pre-2001 CRM merges recovered from salesentity
+        - from: inputs/salesentity_bridge   # customerid -> contactid bridge contact_retail lacks
 
 var_groups:
   - name: user_features
